@@ -17,13 +17,75 @@ export default function NewOrder() {
   const { lang } = useAuth(), go = useNavigate();
   const [msg, setMsg] = useState(''), [order, setOrder] = useState(null), [sel, setSel] = useState(null), [pick, setPick] = useState(0);
   const [tab, setTab] = useState('voice'), [busy, setBusy] = useState(false), [err, setErr] = useState(''), [live, setLive] = useState(false), [copied, setCopied] = useState(false), rec = useRef();
-  const speak = () => {
+  const speak = async () => {
+    setErr('');
     const S = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!S) return setErr('Voice input is not supported in this browser. Use Type Order instead.');
-    if (live) return rec.current.stop();
-    const r = new S(); r.lang = SPEECH[lang] || 'hi-IN'; r.onresult = e => setMsg(e.results[0][0].transcript); r.onend = () => setLive(false);
-    rec.current = r; r.start(); setLive(true);
+    if (!S) {
+      setErr('Voice recognition requires Google Chrome or Edge. You can use Type Order or click a sample below.');
+      return;
+    }
+    if (live) {
+      if (rec.current) {
+        try { rec.current.stop(); } catch (_) {}
+      }
+      setLive(false);
+      return;
+    }
+
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (permErr) {
+          setErr('Microphone access blocked. Click the lock/camera icon in your browser address bar to Allow microphone.');
+          return;
+        }
+      }
+
+      const r = new S();
+      r.continuous = false;
+      r.interimResults = true;
+      r.lang = SPEECH[lang] || 'hi-IN';
+
+      r.onstart = () => {
+        setLive(true);
+        setErr('');
+      };
+
+      r.onresult = (e) => {
+        const text = Array.from(e.results).map(res => res[0].transcript).join('');
+        setMsg(text);
+        if (e.results[0] && e.results[0].isFinal) {
+          runWith(text);
+        }
+      };
+
+      r.onerror = (e) => {
+        console.warn('Voice recognition error:', e.error);
+        setLive(false);
+        if (e.error === 'not-allowed') {
+          setErr('Microphone permission blocked. Please allow microphone in browser URL settings.');
+        } else if (e.error === 'network') {
+          setErr('Browser speech recognition network issue. Please use Quick Samples or Type Order.');
+        } else if (e.error === 'no-speech') {
+          setErr('No speech detected. Please speak closer to your microphone or click a sample order.');
+        } else {
+          setErr(`Voice recognition error: ${e.error}. Try again or use Type Order.`);
+        }
+      };
+
+      r.onend = () => {
+        setLive(false);
+      };
+
+      rec.current = r;
+      r.start();
+    } catch (e) {
+      setLive(false);
+      setErr('Microphone failed: ' + (e.message || 'unknown error'));
+    }
   };
+
   const runWith = async (text) => {
     const query = (typeof text === 'string' ? text : msg).trim();
     if (!query || busy) return;
@@ -55,10 +117,17 @@ export default function NewOrder() {
         <div className="tabs"><button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice Order</button>
           <button className={tab === 'type' ? 'on' : ''} onClick={() => setTab('type')}>Type Order</button></div>
         {tab === 'voice' && <><button className={'mic' + (live ? ' live' : '')} onClick={speak} aria-label="Tap to speak">🎙</button>
-          <p><b>{live ? 'Listening… tap to stop' : 'Tap to speak'}</b></p><p className="muted">or type your order</p></>}
-        <textarea value={msg} onChange={e => setMsg(e.target.value)} rows={3} placeholder="e.g. 2 kilo atta, ek butter de do…" />
+          <p><b>{live ? '🔴 Listening… speak now (tap to stop)' : 'Tap to speak'}</b></p>
+          <p className="muted">{live ? 'Speak in Hindi/Hinglish (e.g. 2 kilo atta, ek butter)' : 'or click sample / type your order'}</p></>}
+        <textarea
+          value={msg}
+          onChange={e => setMsg(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runWith(msg); } }}
+          rows={3}
+          placeholder="e.g. 2 kilo atta, ek butter de do… (press Enter to process)"
+        />
         <button className="cta" onClick={() => runWith(msg)} disabled={busy || !msg.trim()}>{busy ? 'Processing with AI Desk…' : 'Process'}</button>
-        {err && <p className="err" role="alert">{err}</p>}
+        {err && <p className="err" role="alert" style={{ marginTop: 8 }}>{err}</p>}
         <div className="demobox">
           <b>Quick Order Samples (Click to auto-process):</b>
           <div className="row l" style={{ marginTop: 6, flexWrap: 'wrap', gap: 6 }}>
