@@ -19,7 +19,7 @@ logger = logging.getLogger("dukaanmitra.voice_service")
 class VoiceService:
     def __init__(self):
         self.recognizer = sr.Recognizer()
-        self.recognizer.energy_threshold = 300
+        self.recognizer.energy_threshold = 50
         self.recognizer.dynamic_energy_threshold = True
 
     def analyze_audio_volume(self, wav_bytes: bytes) -> Tuple[float, float, bool]:
@@ -45,7 +45,7 @@ class VoiceService:
                     rms = math.sqrt(sum(s * s for s in samples) / len(samples)) if samples else 0.0
 
                 db = 20 * math.log10(rms) if rms > 0 else -100.0
-                is_audible = rms > 250
+                is_audible = rms > 20
                 return float(rms), float(round(db, 1)), is_audible
         except Exception as e:
             logger.warning(f"Error analyzing audio volume: {e}")
@@ -54,28 +54,18 @@ class VoiceService:
     def transcribe_wav(self, wav_bytes: bytes) -> Dict[str, Any]:
         """
         Transcribes 16-bit PCM WAV audio.
-        Returns transcript, audible status, and diagnostic flags.
+        Always attempts Google speech recognition first.
+        Only flags inaudible/unclear if recognition fails.
         """
         rms, db, is_audible = self.analyze_audio_volume(wav_bytes)
-
-        if not is_audible:
-            return {
-                "success": False,
-                "transcript": "",
-                "rms": rms,
-                "db": db,
-                "error": "not_audible",
-                "message": "⚠️ You are not audible. Mic input volume is too low. Please speak louder or bring mic closer."
-            }
 
         try:
             wav_file = io.BytesIO(wav_bytes)
             with sr.AudioFile(wav_file) as source:
-                # Adjust for ambient noise briefly
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.2)
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.1)
                 audio_data = self.recognizer.record(source)
 
-            # Try Hindi (hi-IN) first which best captures Hinglish / Indian store terms
+            # Try Hindi (hi-IN) first, then Marathi (mr-IN), then Indian English (en-IN)
             transcript = ""
             for lang_code in ["hi-IN", "mr-IN", "en-IN"]:
                 try:
@@ -88,7 +78,27 @@ class VoiceService:
                     logger.debug(f"Recognition attempt for {lang_code} failed: {ex}")
                     continue
 
-            if not transcript or not transcript.strip():
+            if transcript and transcript.strip():
+                return {
+                    "success": True,
+                    "transcript": transcript.strip(),
+                    "rms": rms,
+                    "db": db,
+                    "error": None,
+                    "message": None
+                }
+
+            # If recognition failed, check whether it was truly silent or just unclear
+            if not is_audible or rms < 25:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "rms": rms,
+                    "db": db,
+                    "error": "not_audible",
+                    "message": "⚠️ You are not audible. Mic input volume is too low. Please speak louder or bring mic closer."
+                }
+            else:
                 return {
                     "success": False,
                     "transcript": "",

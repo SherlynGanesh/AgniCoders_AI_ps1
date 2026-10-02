@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -18,6 +18,7 @@ from backend.app.schemas.domain import (
 )
 from backend.app.services.order_engine import order_engine
 from backend.app.services.voice_service import voice_service
+from backend.app.services.billing_service import billing_service
 from backend.app.services.semantic_search import semantic_engine
 from backend.data_ingestion.normalization import normalize_text
 

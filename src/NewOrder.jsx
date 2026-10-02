@@ -15,8 +15,8 @@ const STORE_SAMPLES = [
 
 const LBL = { ok: 'Matched', ambiguous: 'Needs selection', oos: 'Stock issue', unknown: 'Not found' };
 
-// Helper to encode Float32 audio samples into standard 16-bit PCM WAV
-function encodeWAV(samples, sampleRate = 16000) {
+// Convert Float32Array PCM samples into standard 16-bit PCM WAV
+function encodeWAV(samples, sampleRate) {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
 
@@ -31,12 +31,12 @@ function encodeWAV(samples, sampleRate = 16000) {
   writeString(8, 'WAVE');
   writeString(12, 'fmt ');
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // Mono
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // Mono channel
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true); // 16-bit
+  view.setUint32(28, sampleRate * 2, true); // Byte rate
+  view.setUint16(32, 2, true); // Block align
+  view.setUint16(34, 16, true); // 16 bits per sample
   writeString(36, 'data');
   view.setUint32(40, samples.length * 2, true);
 
@@ -67,29 +67,32 @@ export default function NewOrder() {
   const [audioAudible, setAudioAudible] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
-  const audioContextRef = useRef(null);
-  const micStreamRef = useRef(null);
-  const scriptNodeRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const micStreamRef = useRef(null);
+  const audioContextRef = useRef(null);
   const animFrameRef = useRef(null);
-  const isRecordingRef = useRef(false);
+  const speechRecRef = useRef(null);
+  const recognizedTextRef = useRef('');
 
-  // Clean up audio & mic streams on unmount
+  // Clean up streams on unmount
   useEffect(() => {
     return () => {
-      stopRecordingAndMonitoring();
+      stopAllAudio();
     };
   }, []);
 
-  const stopRecordingAndMonitoring = () => {
-    isRecordingRef.current = false;
+  const stopAllAudio = () => {
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
     }
-    if (scriptNodeRef.current) {
-      try { scriptNodeRef.current.disconnect(); } catch (_) {}
-      scriptNodeRef.current = null;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch (_) {}
+    }
+    if (speechRecRef.current) {
+      try { speechRecRef.current.stop(); } catch (_) {}
+      speechRecRef.current = null;
     }
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach(t => t.stop());
@@ -107,27 +110,36 @@ export default function NewOrder() {
     setErr('');
 
     if (live) {
-      // User tapped Stop -> Finish recording and send to backend
+      // User tapped Stop -> Finish recording and process
+      setStatusMsg('Finishing recording…');
       setLive(false);
-      finishAndSendAudio();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      if (speechRecRef.current) {
+        try { speechRecRef.current.stop(); } catch (_) {}
+      }
       return;
     }
 
     try {
-      setStatusMsg('Starting microphone…');
-      // Request mic permission and stream
+      setStatusMsg('Requesting microphone access…');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate: 16000,
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
+          autoGainControl: true
         }
       });
       micStreamRef.current = stream;
 
+      // 1. Setup AudioContext & Analyser for real-time visual meter
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const audioCtx = new AudioCtx({ sampleRate: 16000 });
+      const audioCtx = new AudioCtx();
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
       audioContextRef.current = audioCtx;
 
       const source = audioCtx.createMediaStreamSource(stream);
@@ -135,30 +147,11 @@ export default function NewOrder() {
       analyser.fftSize = 256;
       source.connect(analyser);
 
-      // Collect PCM audio samples
-      audioChunksRef.current = [];
-      const scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
-      scriptNodeRef.current = scriptNode;
-
-      scriptNode.onaudioprocess = (e) => {
-        if (!isRecordingRef.current) return;
-        const channelData = e.inputBuffer.getChannelData(0);
-        audioChunksRef.current.push(new Float32Array(channelData));
-      };
-
-      source.connect(scriptNode);
-      scriptNode.connect(audioCtx.destination);
-
-      isRecordingRef.current = true;
-      setLive(true);
-      setStatusMsg('Recording audio… Speak clearly into microphone.');
-
-      // Monitor audio volume in real-time
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
 
       const monitorAudio = () => {
-        if (!isRecordingRef.current) return;
+        if (!micStreamRef.current) return;
         analyser.getByteFrequencyData(dataArray);
 
         let sum = 0;
@@ -169,7 +162,7 @@ export default function NewOrder() {
         const level = Math.min(100, Math.round((avg / 128) * 100));
         setAudioLevel(level);
 
-        if (level > 8) {
+        if (level > 4) {
           setAudioAudible(true);
         } else {
           setAudioAudible(false);
@@ -179,47 +172,127 @@ export default function NewOrder() {
       };
       animFrameRef.current = requestAnimationFrame(monitorAudio);
 
+      // 2. Setup standard browser MediaRecorder (100% reliable)
+      audioChunksRef.current = [];
+      let mimeType = '';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mimeType = 'audio/webm;codecs=opus';
+        else if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+        else if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
+      }
+
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const chunks = audioChunksRef.current;
+        stopAllAudio();
+
+        if (!chunks || chunks.length === 0) {
+          if (recognizedTextRef.current) {
+            runWith(recognizedTextRef.current);
+          } else {
+            setErr('No audio captured. Please speak into the mic.');
+          }
+          return;
+        }
+
+        const rawBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        await processAndSendAudio(rawBlob);
+      };
+
+      // 3. Optional live SpeechRecognition preview in parallel
+      recognizedTextRef.current = '';
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        try {
+          const sr = new SpeechRecognition();
+          sr.continuous = false;
+          sr.interimResults = true;
+          sr.lang = SPEECH[lang] || 'hi-IN';
+
+          sr.onresult = (e) => {
+            const transcript = Array.from(e.results).map(res => res[0].transcript).join('');
+            if (transcript) {
+              recognizedTextRef.current = transcript;
+              setMsg(transcript);
+            }
+          };
+
+          sr.onerror = (e) => {
+            console.debug('Client speech recognition notice:', e.error);
+          };
+
+          speechRecRef.current = sr;
+          sr.start();
+        } catch (_) {}
+      }
+
+      recorder.start(100);
+      setLive(true);
+      setStatusMsg('🔴 Recording… Speak your order now (Tap mic when done)');
+
     } catch (e) {
-      stopRecordingAndMonitoring();
+      stopAllAudio();
       setLive(false);
-      setErr('Microphone access denied or not available. Please allow mic in browser settings: ' + (e.message || ''));
+      setErr('Microphone access denied. Please click the lock icon in your address bar and Allow microphone: ' + (e.message || ''));
     }
   };
 
-  const finishAndSendAudio = async () => {
-    stopRecordingAndMonitoring();
-
-    const chunks = audioChunksRef.current;
-    if (!chunks || chunks.length === 0) {
-      setErr('No audio was captured. Please try speaking again.');
-      return;
-    }
-
-    // Merge Float32Array chunks
-    let totalLength = 0;
-    for (let c of chunks) totalLength += c.length;
-    const mergedSamples = new Float32Array(totalLength);
-    let offset = 0;
-    for (let c of chunks) {
-      mergedSamples.set(c, offset);
-      offset += c.length;
-    }
-
-    // Encode to 16-bit PCM WAV
-    const wavBlob = encodeWAV(mergedSamples, 16000);
-
+  const processAndSendAudio = async (rawBlob) => {
     setBusy(true);
-    setStatusMsg('Sending audio to Backend AI Speech Engine…');
+    setStatusMsg('Encoding audio & processing with Backend AI Desk…');
 
     try {
+      // Decode audio blob into PCM samples using Web Audio API
+      let wavBlob = null;
+      try {
+        const arrayBuffer = await rawBlob.arrayBuffer();
+        const decodeCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        if (decodeCtx.state === 'suspended') {
+          await decodeCtx.resume();
+        }
+        const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer);
+        const pcmChannel = audioBuffer.getChannelData(0);
+        wavBlob = encodeWAV(pcmChannel, audioBuffer.sampleRate);
+        decodeCtx.close();
+      } catch (decodeErr) {
+        console.warn('Direct decode failed, sending raw blob:', decodeErr);
+        wavBlob = rawBlob;
+      }
+
+      // Send WAV to Backend Voice Engine
       const res = await api.sendVoiceOrder(wavBlob);
+
       if (res.transcript) {
         setMsg(res.transcript);
+      } else if (recognizedTextRef.current && !res.items?.length) {
+        // If client recognition caught text but backend had low mic volume, re-parse with text
+        const clientRes = await api.parseOrder(recognizedTextRef.current);
+        setOrder(clientRes);
+        setStatusMsg('');
+        return;
       }
+
       setOrder(res);
       setStatusMsg('');
     } catch (e) {
-      setErr('Backend speech recognition error: ' + (e.message || 'Server error.'));
+      // If backend network error but client recognition has text, fall back to parsing text
+      if (recognizedTextRef.current) {
+        try {
+          const fallbackRes = await api.parseOrder(recognizedTextRef.current);
+          setOrder(fallbackRes);
+          setStatusMsg('');
+          return;
+        } catch (_) {}
+      }
+      setErr('Speech processing note: ' + (e.message || 'Please check mic or try typing.'));
     } finally {
       setBusy(false);
     }
@@ -351,7 +424,7 @@ export default function NewOrder() {
 
         {err && <p className="err" role="alert" style={{ marginTop: 8 }}>{err}</p>}
 
-        {/* General Store Samples */}
+        {/* Quick Store Samples */}
         <div className="demobox" style={{ marginTop: 14 }}>
           <b style={{ color: '#1e293b', fontSize: 13 }}>🛒 Quick Store Order Samples:</b>
           <div className="row l" style={{ marginTop: 6, flexWrap: 'wrap', gap: 6 }}>
@@ -437,9 +510,9 @@ export default function NewOrder() {
               </div>
             )}
 
-            <p className="muted" style={{ marginTop: 14 }}>Extracted Store Items ({order.items.length})</p>
+            <p className="muted" style={{ marginTop: 14 }}>Extracted Store Items ({order.items?.length || 0})</p>
 
-            {order.items.length === 0 ? (
+            {!order.items || order.items.length === 0 ? (
               <div style={{
                 background: '#f8fafc',
                 border: '1px dashed #cbd5e1',
@@ -498,7 +571,7 @@ export default function NewOrder() {
                 <button className="cta" onClick={review} style={{ width: '100%' }}>
                   Review &amp; Confirm Order →
                 </button>
-              ) : order.items.length > 0 ? (
+              ) : order.items && order.items.length > 0 ? (
                 <p className="warn" style={{ textAlign: 'center' }}>
                   ⚠️ Some items need variant selection before confirmation
                 </p>
@@ -509,7 +582,7 @@ export default function NewOrder() {
       </section>
 
       {/* Ambiguity Selection Modal */}
-      {sel !== null && order?.items[sel] && (
+      {sel !== null && order?.items && order.items[sel] && (
         <div className="modal" role="dialog" aria-modal="true">
           <div className="card mbox">
             <h2>Which {order.items[sel].name.toLowerCase()} do you want?</h2>
