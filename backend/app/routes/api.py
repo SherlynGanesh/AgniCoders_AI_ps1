@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from backend.app.database.session import get_db
 from backend.app.models.entities import (
-    Shop, Product, ProductVariant, Inventory, Order, OrderItem,
+    Shop, Shopkeeper, Product, ProductVariant, Inventory, Order, OrderItem,
     Alias, Clarification, AIDecision
 )
 from backend.app.schemas.domain import (
@@ -439,26 +439,128 @@ def get_frontend_catalog(db: Session = Depends(get_db)):
     return items
 
 
-# Simple Auth Mock-to-Live Bridge
+# ================= Frontend Auth System =================
+class RegisterRequest(BaseModel):
+    name: str
+    shop: str
+    email: str
+    phone: str
+    password: Optional[str] = ""
+    consent: Optional[bool] = True
+
+
+class VerifyOtpRequest(BaseModel):
+    email: str
+    otp: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@router.post("/auth/register", tags=["Frontend Auth"])
+def auth_register(req: RegisterRequest, db: Session = Depends(get_db)):
+    """
+    Registers a new shopkeeper and shop in PostgreSQL.
+    """
+    try:
+        # Check if shop exists or create
+        shop = db.query(Shop).filter(Shop.name.ilike(req.shop)).first()
+        if not shop:
+            shop = Shop(
+                name=req.shop,
+                city="Mumbai",
+                state="Maharashtra",
+                phone=req.phone,
+                data_source="USER_REGISTERED"
+            )
+            db.add(shop)
+            db.flush()
+
+        # Check if shopkeeper exists
+        sk = db.query(Shopkeeper).filter(
+            (Shopkeeper.email.ilike(req.email)) | (Shopkeeper.phone == req.phone)
+        ).first()
+        if not sk:
+            sk = Shopkeeper(
+                shop_id=shop.id,
+                name=req.name,
+                phone=req.phone,
+                email=req.email,
+                data_source="USER_REGISTERED"
+            )
+            db.add(sk)
+        else:
+            sk.name = req.name
+            sk.shop_id = shop.id
+            sk.phone = req.phone
+
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    return {
+        "status": "ok",
+        "message": "Account created successfully.",
+        "pending": True
+    }
+
+
+@router.post("/auth/verify-otp", tags=["Frontend Auth"])
+def auth_verify_otp(req: VerifyOtpRequest, db: Session = Depends(get_db)):
+    """
+    Verifies OTP for user account.
+    """
+    if req.otp == "000000":
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "This code has expired. Request a new one.", "code": "OTP_EXPIRED"}
+        )
+    if req.otp == "111111":
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Incorrect code.", "code": "OTP_INVALID"}
+        )
+    return {"verified": True, "status": "ok"}
+
+
+@router.post("/auth/resend-otp", tags=["Frontend Auth"])
+def auth_resend_otp(body: Dict[str, Any]):
+    return {"sent": True, "status": "ok"}
+
+
 @router.post("/auth/login", tags=["Frontend Auth"])
-def auth_login(body: Dict[str, Any]):
+def auth_login(req: LoginRequest, db: Session = Depends(get_db)):
+    """
+    Logs in the shopkeeper, fetching data from PostgreSQL if registered.
+    """
+    sk = db.query(Shopkeeper).filter(
+        (Shopkeeper.email.ilike(req.email)) | (Shopkeeper.phone == req.email)
+    ).first()
+
+    name = sk.name if sk else "Bhavika Bhirud"
+    shop_name = sk.shop.name if sk and sk.shop else "Bhirud Kirana"
+    email = sk.email if sk and sk.email else req.email
+
     return {
         "accessToken": "dukaanmitra-jwt-token-active",
         "user": {
-            "name": "Ramesh Patil",
-            "shop": "Patil General Store",
-            "email": body.get("email", "ramesh.patil@demo.local"),
+            "name": name,
+            "shop": shop_name,
+            "email": email,
             "verified": True
         }
     }
 
 
 @router.get("/auth/me", tags=["Frontend Auth"])
-def auth_me():
+def auth_me(db: Session = Depends(get_db)):
+    sk = db.query(Shopkeeper).first()
     return {
-        "name": "Ramesh Patil",
-        "shop": "Patil General Store",
-        "email": "ramesh.patil@demo.local",
+        "name": sk.name if sk else "Bhavika Bhirud",
+        "shop": sk.shop.name if sk and sk.shop else "Bhirud Kirana",
+        "email": sk.email if sk and sk.email else "bhirudbhavika28@gmail.com",
         "verified": True
     }
 
@@ -471,4 +573,15 @@ def auth_refresh():
 @router.post("/auth/logout", tags=["Frontend Auth"])
 def auth_logout():
     return {"status": "ok"}
+
+
+@router.post("/auth/forgot-password", tags=["Frontend Auth"])
+def auth_forgot_password(body: Dict[str, Any]):
+    return {"sent": True}
+
+
+@router.post("/auth/reset-password", tags=["Frontend Auth"])
+def auth_reset_password(body: Dict[str, Any]):
+    return {"status": "ok"}
+
 

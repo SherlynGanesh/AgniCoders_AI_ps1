@@ -50,6 +50,7 @@ app.add_middleware(
 
 # Include API Router
 app.include_router(api_router, prefix="/api/v1")
+app.include_router(api_router, prefix="/api")
 app.include_router(api_router)  # Also mount directly for root convenience
 
 
