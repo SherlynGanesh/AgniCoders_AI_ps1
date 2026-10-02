@@ -8,6 +8,11 @@
 /DMart.csv
 /bigbasket_products.csv
 
+# Node & Frontend
+node_modules/
+dist/
+.vite/
+
 # Python
 __pycache__/
 *.py[cod]
