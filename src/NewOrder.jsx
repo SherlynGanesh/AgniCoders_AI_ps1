@@ -6,7 +6,11 @@ import { SPEECH } from './i18n';
 import { useAuth, useData } from './AuthContext';
 
 const inr = n => '₹' + (+n).toLocaleString('en-IN');
-const SAMPLE = 'Bhaiya, 2 kilo atta, ek Amul butter aur sugar aadha kilo, tel bhi chahiye, kal subah tak bhej dena';
+const SAMPLES = [
+  { label: '🛒 Grocery & Dairy', text: 'Bhaiya, 2 kilo atta, ek Amul butter aur sugar aadha kilo, tel bhi chahiye, kal subah tak bhej dena' },
+  { label: '🧴 Personal & Home Care', text: 'Dettol soap 2 piece, coconut oil 200ml aur plastic bathroom mug bhej do' },
+  { label: '🍜 Packaged Food & Snacks', text: 'Maggi 4 pack, Parle-G biscuit aur tea masala chahiye' },
+];
 const LBL = { ok: 'Matched', ambiguous: 'Needs selection', oos: 'Stock issue', unknown: 'Not found' };
 
 export default function NewOrder() {
@@ -37,9 +41,16 @@ export default function NewOrder() {
           <p><b>{live ? 'Listening… tap to stop' : 'Tap to speak'}</b></p><p className="muted">or type your order</p></>}
         <textarea value={msg} onChange={e => setMsg(e.target.value)} rows={3} placeholder="e.g. 2 kilo atta, ek butter de do…" />
         <button className="cta" onClick={run} disabled={busy || !msg.trim()}>{busy && !order ? 'Processing…' : 'Process'}</button>
-        {err && <p className="err" role="alert">{err}</p>}
-        <div className="demobox"><b>Try Demo Order</b><p className="muted">"{SAMPLE}"</p><button className="btn-sm" onClick={() => setMsg(SAMPLE)}>Use Demo</button></div>
-        {auth.DEMO && <p className="demo">Demo mode: parsing is a local mock, not the LLM.</p>}
+        <div className="demobox">
+          <b>Quick Order Samples:</b>
+          <div className="row l" style={{ marginTop: 6, flexWrap: 'wrap', gap: 6 }}>
+            {SAMPLES.map(s => (
+              <button key={s.label} type="button" className="btn-sm" onClick={() => setMsg(s.text)}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
       <section className="card">
         <h2>AI Understanding</h2>

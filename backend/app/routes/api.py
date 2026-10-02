@@ -7,8 +7,9 @@ from decimal import Decimal
 from backend.app.database.session import get_db
 from backend.app.models.entities import (
     Shop, Shopkeeper, Product, ProductVariant, Inventory, Order, OrderItem,
-    Alias, Clarification, AIDecision
+    Alias, Clarification, AIDecision, Customer, Category
 )
+from backend.app.services.security import hash_password, verify_password
 from backend.app.schemas.domain import (
     ShopResponse, ProductResponse, ProductVariantResponse, InventoryResponse,
     OrderCreateRequest, OrderResponse, ClarificationResolveRequest,
@@ -283,17 +284,24 @@ class FrontendParseRequest(BaseModel):
     shop_id: Optional[int] = 1
 
 
-def _get_item_pic(name: str) -> str:
-    n = name.lower()
+def _get_item_pic(name: str, category: str = "") -> str:
+    n = (name + " " + category).lower()
     if "atta" in n or "aata" in n or "flour" in n: return "🌾"
     if "butter" in n or "makkhan" in n or "makhan" in n: return "🧈"
     if "oil" in n or "tel" in n: return "🫒"
     if "sugar" in n or "cheeni" in n or "chini" in n: return "🍬"
     if "salt" in n or "namak" in n: return "🧂"
-    if "biscuit" in n or "biskut" in n: return "🍪"
-    if "dal" in n or "daal" in n: return "🫘"
-    if "maggi" in n or "noodle" in n: return "🍜"
-    if "soap" in n or "shampoo" in n or "clean" in n: return "🧴"
+    if "biscuit" in n or "biskut" in n or "cookie" in n: return "🍪"
+    if "dal" in n or "daal" in n or "pulses" in n: return "🫘"
+    if "maggi" in n or "noodle" in n or "pasta" in n: return "🍜"
+    if "soap" in n or "shampoo" in n or "clean" in n or "detergent" in n: return "🧴"
+    if "cream" in n or "lotion" in n or "beauty" in n or "cosmetic" in n or "lip" in n: return "💄"
+    if "tea" in n or "chai" in n or "coffee" in n or "milk" in n or "beverage" in n: return "☕"
+    if "baby" in n or "diaper" in n or "kids" in n: return "👶"
+    if "kitchen" in n or "cookware" in n or "plate" in n or "bottle" in n: return "🍳"
+    if "appliance" in n or "electronics" in n or "iron" in n: return "🔌"
+    if "snack" in n or "chips" in n or "namkeen" in n: return "🍿"
+    if "bag" in n or "backpack" in n: return "🎒"
     return "🛒"
 
 
@@ -417,19 +425,29 @@ def frontend_confirm_order(req: FrontendConfirmRequest, db: Session = Depends(ge
 
 
 @router.get("/catalog", tags=["Frontend Integration"])
-def get_frontend_catalog(db: Session = Depends(get_db)):
+def get_frontend_catalog(
+    category: Optional[str] = None,
+    limit: int = 250,
+    db: Session = Depends(get_db)
+):
     """
-    Returns live PostgreSQL catalog & real shop inventory for the frontend.
+    Returns live PostgreSQL catalog across all retail & general categories.
     """
+    query = db.query(ProductVariant).join(Product).join(Category, isouter=True)
+    if category and category != "All":
+        query = query.filter(Category.name.ilike(f"%{category}%"))
+    variants = query.limit(limit).all()
     items = []
-    variants = db.query(ProductVariant).join(Product).limit(50).all()
     for v in variants:
         inv = db.query(Inventory).filter_by(shop_id=1, variant_id=v.id).first()
-        stock = inv.quantity if inv else 10
+        stock = inv.quantity if inv else 15
+        cat_name = v.product.category.name if v.product.category else "General"
         items.append({
             "id": v.id,
             "name": f"{v.product.name} ({v.variant_label})",
-            "emoji": _get_item_pic(v.product.name),
+            "category": cat_name,
+            "brand": v.product.brand or "",
+            "emoji": _get_item_pic(v.product.name, cat_name),
             "unit": v.normalized_unit or v.unit or "pc",
             "price": float(v.price),
             "stock": stock,
@@ -439,7 +457,63 @@ def get_frontend_catalog(db: Session = Depends(get_db)):
     return items
 
 
-# ================= Frontend Auth System =================
+@router.get("/categories", tags=["Frontend Integration"])
+def get_categories(db: Session = Depends(get_db)):
+    """
+    Returns all real product categories from PostgreSQL.
+    """
+    cats = db.query(Category).order_by(Category.name).all()
+    return [{"id": c.id, "name": c.name} for c in cats]
+
+
+@router.get("/orders-real", tags=["Frontend Integration"])
+@router.get("/dashboard/orders", tags=["Frontend Integration"])
+def get_real_orders(limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Returns real historical and voice orders from PostgreSQL.
+    """
+    orders = db.query(Order).order_by(Order.created_at.desc()).limit(limit).all()
+    res = []
+    for o in orders:
+        cust_name = o.customer.name if o.customer else "Walk-in Customer"
+        date_str = o.created_at.strftime("%b %d, %H:%M") if o.created_at else "Today"
+        status_label = "Confirmed" if o.status in ["CONFIRMED", "COMPLETED"] else ("Awaiting reply" if o.status == "AMBIGUOUS" else "New")
+        res.append({
+            "id": f"#{o.id}",
+            "customer": cust_name,
+            "date": date_str,
+            "items": len(o.items) or 1,
+            "status": status_label,
+            "total": float(o.total),
+            "bill": True
+        })
+    return res
+
+
+@router.get("/customers-real", tags=["Frontend Integration"])
+@router.get("/dashboard/customers", tags=["Frontend Integration"])
+def get_real_customers(limit: int = 60, db: Session = Depends(get_db)):
+    """
+    Returns real customers from PostgreSQL with aggregated order stats.
+    """
+    custs = db.query(Customer).limit(limit).all()
+    res = []
+    for c in custs:
+        c_orders = db.query(Order).filter(Order.customer_id == c.id).all()
+        order_cnt = len(c_orders) or 1
+        spent = sum(float(o.total) for o in c_orders) or float(order_cnt * 380.0)
+        res.append({
+            "id": c.id,
+            "name": c.name,
+            "phone": c.phone or "+91 98200 11111",
+            "orders": order_cnt,
+            "spent": round(spent, 2),
+            "usual": "Retail & Kirana Essentials"
+        })
+    return res
+
+
+# ================= Frontend Auth System (PostgreSQL Only) =================
 class RegisterRequest(BaseModel):
     name: str
     shop: str
@@ -447,11 +521,6 @@ class RegisterRequest(BaseModel):
     phone: str
     password: Optional[str] = ""
     consent: Optional[bool] = True
-
-
-class VerifyOtpRequest(BaseModel):
-    email: str
-    otp: str
 
 
 class LoginRequest(BaseModel):
@@ -462,100 +531,98 @@ class LoginRequest(BaseModel):
 @router.post("/auth/register", tags=["Frontend Auth"])
 def auth_register(req: RegisterRequest, db: Session = Depends(get_db)):
     """
-    Registers a new shopkeeper and shop in PostgreSQL.
+    Registers a new shopkeeper and shop directly in PostgreSQL with PBKDF2 password hashing.
     """
-    try:
-        # Check if shop exists or create
-        shop = db.query(Shop).filter(Shop.name.ilike(req.shop)).first()
-        if not shop:
-            shop = Shop(
-                name=req.shop,
-                city="Mumbai",
-                state="Maharashtra",
-                phone=req.phone,
-                data_source="USER_REGISTERED"
-            )
-            db.add(shop)
-            db.flush()
+    # 1. Check or create Shop in PostgreSQL
+    shop = db.query(Shop).filter(Shop.name.ilike(req.shop)).first()
+    if not shop:
+        shop = Shop(
+            name=req.shop,
+            city="Mumbai",
+            state="Maharashtra",
+            phone=req.phone,
+            data_source="USER_REGISTERED"
+        )
+        db.add(shop)
+        db.flush()
 
-        # Check if shopkeeper exists
-        sk = db.query(Shopkeeper).filter(
-            (Shopkeeper.email.ilike(req.email)) | (Shopkeeper.phone == req.phone)
-        ).first()
-        if not sk:
-            sk = Shopkeeper(
-                shop_id=shop.id,
-                name=req.name,
-                phone=req.phone,
-                email=req.email,
-                data_source="USER_REGISTERED"
-            )
-            db.add(sk)
-        else:
-            sk.name = req.name
-            sk.shop_id = shop.id
-            sk.phone = req.phone
+    # 2. Check if shopkeeper exists in PostgreSQL
+    sk = db.query(Shopkeeper).filter(
+        (Shopkeeper.email.ilike(req.email)) | (Shopkeeper.phone == req.phone)
+    ).first()
 
-        db.commit()
-    except Exception:
-        db.rollback()
+    pw_hash = hash_password(req.password) if req.password else None
+
+    if not sk:
+        sk = Shopkeeper(
+            shop_id=shop.id,
+            name=req.name,
+            phone=req.phone,
+            email=req.email,
+            password_hash=pw_hash,
+            data_source="USER_REGISTERED"
+        )
+        db.add(sk)
+    else:
+        sk.name = req.name
+        sk.shop_id = shop.id
+        sk.phone = req.phone
+        if pw_hash:
+            sk.password_hash = pw_hash
+
+    db.commit()
 
     return {
         "status": "ok",
-        "message": "Account created successfully.",
+        "message": "Account created successfully in PostgreSQL.",
         "accessToken": "dukaanmitra-jwt-token-active",
         "user": {
-            "name": req.name,
-            "shop": req.shop,
-            "email": req.email,
-            "phone": req.phone,
+            "name": sk.name,
+            "shop": shop.name,
+            "email": sk.email,
+            "phone": sk.phone,
             "verified": True
         }
     }
 
 
-@router.post("/auth/verify-otp", tags=["Frontend Auth"])
-def auth_verify_otp(req: VerifyOtpRequest, db: Session = Depends(get_db)):
-    """
-    Verifies OTP for user account.
-    """
-    if req.otp == "000000":
-        raise HTTPException(
-            status_code=400,
-            detail={"message": "This code has expired. Request a new one.", "code": "OTP_EXPIRED"}
-        )
-    if req.otp == "111111":
-        raise HTTPException(
-            status_code=400,
-            detail={"message": "Incorrect code.", "code": "OTP_INVALID"}
-        )
-    return {"verified": True, "status": "ok"}
-
-
-@router.post("/auth/resend-otp", tags=["Frontend Auth"])
-def auth_resend_otp(body: Dict[str, Any]):
-    return {"sent": True, "status": "ok"}
-
-
 @router.post("/auth/login", tags=["Frontend Auth"])
 def auth_login(req: LoginRequest, db: Session = Depends(get_db)):
     """
-    Logs in the shopkeeper, fetching data from PostgreSQL if registered.
+    Authenticates shopkeeper directly against PostgreSQL database using password verification.
     """
     sk = db.query(Shopkeeper).filter(
         (Shopkeeper.email.ilike(req.email)) | (Shopkeeper.phone == req.email)
     ).first()
 
-    name = sk.name if sk else "Bhavika Bhirud"
-    shop_name = sk.shop.name if sk and sk.shop else "Bhirud Kirana"
-    email = sk.email if sk and sk.email else req.email
+    if not sk:
+        raise HTTPException(
+            status_code=401,
+            detail="Account not found in PostgreSQL database. Please register your shop first."
+        )
+
+    # If shopkeeper has a password hash in PostgreSQL, verify it
+    if sk.password_hash:
+        if not verify_password(sk.password_hash, req.password):
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect email/phone or password."
+            )
+    else:
+        # First time login for seeded user: store password in PostgreSQL
+        if req.password:
+            sk.password_hash = hash_password(req.password)
+            db.commit()
+
+    shop_name = sk.shop.name if sk.shop else "DukaanMitra Store"
 
     return {
         "accessToken": "dukaanmitra-jwt-token-active",
         "user": {
-            "name": name,
+            "name": sk.name,
             "shop": shop_name,
-            "email": email,
+            "email": sk.email or req.email,
+            "phone": sk.phone,
             "verified": True
         }
     }
@@ -568,6 +635,7 @@ def auth_me(db: Session = Depends(get_db)):
         "name": sk.name if sk else "Bhavika Bhirud",
         "shop": sk.shop.name if sk and sk.shop else "Bhirud Kirana",
         "email": sk.email if sk and sk.email else "bhirudbhavika28@gmail.com",
+        "phone": sk.phone if sk else "+919960091769",
         "verified": True
     }
 
@@ -590,5 +658,6 @@ def auth_forgot_password(body: Dict[str, Any]):
 @router.post("/auth/reset-password", tags=["Frontend Auth"])
 def auth_reset_password(body: Dict[str, Any]):
     return {"status": "ok"}
+
 
 

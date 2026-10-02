@@ -48,29 +48,49 @@ export function Orders() {
 }
 
 export function Catalog() {
-  const { catalog, setCatalog } = useData(), [q, setQ] = useState(''), blank = { name: '', unit: 'kg', price: '', stock: '', img: '' }, [n, setN] = useState(blank);
+  const { catalog, setCatalog, categories } = useData();
+  const [q, setQ] = useState(''), [cat, setCat] = useState('All');
+  const blank = { name: '', unit: 'kg', price: '', stock: '', img: '' }, [n, setN] = useState(blank);
   const add = e => { e.preventDefault(); if (!n.name || !n.price) return;
-    setCatalog([...catalog, { id: Date.now(), img: n.img, name: n.name, unit: n.unit, price: +n.price, stock: +n.stock || 0, min: 5, sold: 0 }]); setN(blank); };
+    setCatalog([...catalog, { id: Date.now(), img: n.img, name: n.name, category: cat !== 'All' ? cat : 'General', unit: n.unit, price: +n.price, stock: +n.stock || 0, min: 5, sold: 0 }]); setN(blank); };
   const setStock = (id, v) => setCatalog(catalog.map(p => p.id === id ? { ...p, stock: Math.max(0, parseInt(v.replace(/\D/g, '')) || 0) } : p));
   const adj = (id, d) => setCatalog(catalog.map(p => p.id === id ? { ...p, stock: Math.max(0, p.stock + d) } : p));
+
+  const filtered = catalog.filter(p => {
+    const matchQ = (p.name + ' ' + (p.category || '')).toLowerCase().includes(q.toLowerCase());
+    const matchCat = cat === 'All' || (p.category && p.category.toLowerCase().includes(cat.toLowerCase()));
+    return matchQ && matchCat;
+  });
+
+  const catOptions = ['All', ...new Set((categories && categories.length ? categories.map(c => c.name) : catalog.map(p => p.category)).filter(Boolean))].slice(0, 15);
+
   return (
     <Page title="Catalog & Stock">
       <form className="toolbar card" onSubmit={add}>
         <input placeholder="Product name" value={n.name} onChange={e => setN({ ...n, name: e.target.value })} />
-        <select value={n.unit} onChange={e => setN({ ...n, unit: e.target.value })}><option>kg</option><option>pc</option><option>L</option></select>
+        <select value={n.unit} onChange={e => setN({ ...n, unit: e.target.value })}><option>kg</option><option>pc</option><option>L</option><option>g</option><option>ml</option></select>
         <input placeholder="Price ₹" inputMode="numeric" value={n.price} onChange={e => setN({ ...n, price: e.target.value })} />
         <input placeholder="Stock" inputMode="numeric" value={n.stock} onChange={e => setN({ ...n, stock: e.target.value })} />
         <label className="upl">📷 {n.img ? 'Photo added' : 'Add photo'}<input type="file" accept="image/*" hidden onChange={e => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => setN(x => ({ ...x, img: r.result })); r.readAsDataURL(f); }} /></label>
         <button className="cta">Add product</button></form>
-      <div className="toolbar"><input placeholder="Search products" value={q} onChange={e => setQ(e.target.value)} /></div>
+      
+      <div className="toolbar">
+        <input placeholder="Search products or category (e.g. shampoo, maggi, oil, dal)" value={q} onChange={e => setQ(e.target.value)} />
+        <select value={cat} onChange={e => setCat(e.target.value)} style={{ maxWidth: 220 }}>
+          {catOptions.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+
       <div className="stats"><Stat l="Total products" v={catalog.length} /><Stat l="Low stock" v={catalog.filter(p => p.stock > 0 && p.stock <= p.min).length} /><Stat l="Out of stock" v={catalog.filter(p => !p.stock).length} /></div>
-      <div className="card"><Table cols={['Picture', 'Product', 'Unit', 'Price', 'Status', 'Update stock', '']}
-        rows={catalog.filter(p => p.name.toLowerCase().includes(q.toLowerCase())).map(p => [<Pic p={p} size="sm" />, p.name, p.unit, inr(p.price),
+      <div className="card"><Table cols={['Picture', 'Product', 'Category', 'Unit', 'Price', 'Status', 'Update stock', '']}
+        rows={filtered.map(p => [<Pic p={p} size="sm" />, p.name, <span className="chip muted" style={{ fontSize: 11 }}>{p.category || 'General'}</span>, p.unit, inr(p.price),
           <span className={'chip ' + (p.stock === 0 ? 'oos' : p.stock <= p.min ? 'ambiguous' : 'ok')}>{p.stock === 0 ? 'Out of stock' : p.stock <= p.min ? 'Low' : 'In stock'}</span>,
           <span className="row l" style={{ margin: 0 }}><button className="btn-sm" onClick={() => adj(p.id, -1)} aria-label={'Decrease ' + p.name}>−</button>
             <input className="qty" inputMode="numeric" value={p.stock} aria-label={'Stock of ' + p.name} onChange={e => setStock(p.id, e.target.value)} />
             <button className="btn-sm" onClick={() => adj(p.id, 1)} aria-label={'Increase ' + p.name}>+</button> <span className="muted">{p.unit}</span></span>,
-          <button className="link" onClick={() => setCatalog(catalog.filter(x => x.id !== p.id))}>Remove</button>])} /></div>
+          <button className="link" onClick={() => setCatalog(catalog.filter(x => x.id !== p.id))}>Remove</button>])} />
+        {!filtered.length && <p className="muted center" style={{ padding: 20 }}>No products match this filter.</p>}
+      </div>
     </Page>
   );
 }
