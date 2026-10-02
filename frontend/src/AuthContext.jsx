@@ -15,6 +15,14 @@ export function Providers({ children }) {
   const t = k => tr(lang, k), updateUser = u => setUser(x => ({ ...x, ...u }));
   const [customers] = useState(seed.customers);
   useEffect(() => {
+    // Fetch live catalog and stock directly from PostgreSQL backend
+    fetch('http://localhost:8000/api/catalog')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (data && data.length) setCatalog(data);
+      })
+      .catch(() => {});
+
     auth.refreshSession().then(d => d && auth.getCurrentUser().then(setUser)).catch(() => {}).finally(() => setReady(true));
     const f = () => { setUser(null); setExpired(true); };
     window.addEventListener('auth:expired', f); return () => window.removeEventListener('auth:expired', f);

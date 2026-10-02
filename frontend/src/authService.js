@@ -1,8 +1,8 @@
 // Tokens live in memory only. Refresh token = HttpOnly cookie set by the backend.
 // Expected: POST /auth/login {email,password} -> {accessToken,user:{name,shop,verified}}
 //           POST /auth/refresh -> {accessToken} | POST /auth/logout | GET /auth/me
-const BASE = import.meta.env.VITE_API_URL;
-export const DEMO = !BASE;
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+export const DEMO = false;
 let token = null;
 export class ApiError extends Error { constructor(s, m, c) { super(m); this.status = s; this.code = c; } }
 

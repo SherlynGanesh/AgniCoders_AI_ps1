@@ -35,11 +35,16 @@ export function makeClarification(items) {
     : i.status === 'unknown' ? [`"${i.raw}" samajh nahi aaya, please batayein.`] : []);
   return q.length ? 'Namaste! ' + q.join(' ') : '';
 }
-export const parseOrder = message => DEMO ? Promise.resolve(mockParse(message)) : req('/orders/parse', { method: 'POST', body: JSON.stringify({ message }) });
+export const parseOrder = message => req('/orders/parse', { method: 'POST', body: JSON.stringify({ message }) }).catch(err => {
+  console.warn('Backend request failed, falling back to local engine:', err);
+  return mockParse(message);
+});
+
 export function confirmOrder(id, items, message = '') {
-  if (!DEMO) return req('/orders/confirm', { method: 'POST', body: JSON.stringify({ id, items }) });
-  const lines = items.map(i => ({ name: i.name, qty: i.qty, unit: i.unit, price: i.price, total: i.qty * i.price }));
-  const total = lines.reduce((s, l) => s + l.total, 0);
-  return Promise.resolve({ bill: { lines, subtotal: total, total },
-    deliveryNote: /kal subah/i.test(message) ? 'Deliver tomorrow morning.' : 'Deliver today.' });
+  return req('/orders/confirm', { method: 'POST', body: JSON.stringify({ id, items, message }) }).catch(() => {
+    const lines = items.map(i => ({ name: i.name, qty: i.qty, unit: i.unit, price: i.price, total: i.qty * i.price }));
+    const total = lines.reduce((s, l) => s + l.total, 0);
+    return Promise.resolve({ bill: { lines, subtotal: total, total },
+      deliveryNote: /kal subah/i.test(message) ? 'Deliver tomorrow morning.' : 'Deliver today.' });
+  });
 }
