@@ -35,9 +35,10 @@ export default function NewOrder() {
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
-          await navigator.mediaDevices.getUserMedia({ audio: true });
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach(t => t.stop());
         } catch (permErr) {
-          setErr('Microphone access blocked. Click the lock/camera icon in your browser address bar to Allow microphone.');
+          setErr('Microphone access blocked. Click the lock icon in your browser address bar to Allow microphone.');
           return;
         }
       }
@@ -126,7 +127,12 @@ export default function NewOrder() {
           rows={3}
           placeholder="e.g. 2 kilo atta, ek butter de do… (press Enter to process)"
         />
-        <button className="cta" onClick={() => runWith(msg)} disabled={busy || !msg.trim()}>{busy ? 'Processing with AI Desk…' : 'Process'}</button>
+        <div className="row l" style={{ marginTop: 8, gap: 8 }}>
+          <button className="cta" onClick={() => runWith(msg)} disabled={busy || !msg.trim()} style={{ flex: 1 }}>{busy ? 'Processing with AI Desk…' : 'Process'}</button>
+          <button type="button" className={'btn ' + (live ? 'cta' : 'ghost')} onClick={speak} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            🎙️ {live ? '🔴 Stop' : 'Speak'}
+          </button>
+        </div>
         {err && <p className="err" role="alert" style={{ marginTop: 8 }}>{err}</p>}
         <div className="demobox">
           <b>Quick Order Samples (Click to auto-process):</b>

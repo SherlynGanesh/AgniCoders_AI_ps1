@@ -12,17 +12,22 @@ logger = logging.getLogger("dukaanmitra.matching")
 
 # Known Hinglish semantic synonyms
 HINGLISH_SYNONYMS = {
+    "atta": "atta",
+    "aata": "atta",
+    "gehun": "wheat atta",
+    "flour": "atta",
     "makkhan": "butter",
     "makhan": "butter",
     "tel": "oil",
     "namak": "salt",
     "cheeni": "sugar",
+    "chini": "sugar",
     "shakkar": "sugar",
     "doodh": "milk",
     "dahi": "curd",
     "chawal": "rice",
     "dal": "dal",
-    "daal": "pulses",
+    "daal": "dal",
     "haldi": "turmeric",
     "mirch": "chilli",
     "dhaniya": "coriander",
