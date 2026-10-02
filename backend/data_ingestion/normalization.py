@@ -46,12 +46,17 @@ SIZE_UNIT_PATTERN = re.compile(
 )
 
 
+DEVANAGARI_DIGIT_MAP = str.maketrans('०१२३४५६७८९', '0123456789')
+
+
 def normalize_text(text: Optional[str]) -> str:
-    """Lowercases, removes special characters, and trims extra spaces."""
+    """Lowercases, converts Devanagari digits to ASCII, removes special characters, and trims extra spaces."""
     if not text:
         return ""
-    # Remove excessive punctuation but keep alphanumerics
-    cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(text))
+    # Convert Devanagari numerals to ASCII digits
+    converted = str(text).translate(DEVANAGARI_DIGIT_MAP)
+    # Remove excessive punctuation but keep alphanumerics and Devanagari unicode characters
+    cleaned = re.sub(r'[^a-zA-Z0-9\u0900-\u097F\s]', ' ', converted)
     # Replace multiple spaces with a single space
     return re.sub(r'\s+', ' ', cleaned).strip().lower()
 

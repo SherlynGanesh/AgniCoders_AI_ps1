@@ -10,7 +10,7 @@ from backend.data_ingestion.normalization import normalize_text
 
 logger = logging.getLogger("dukaanmitra.matching")
 
-# Known Hinglish semantic synonyms
+# Known Hinglish & Hindi Devanagari semantic synonyms
 HINGLISH_SYNONYMS = {
     "atta": "atta",
     "aata": "atta",
@@ -18,7 +18,9 @@ HINGLISH_SYNONYMS = {
     "flour": "atta",
     "makkhan": "butter",
     "makhan": "butter",
+    "butter": "butter",
     "tel": "oil",
+    "oil": "oil",
     "namak": "salt",
     "cheeni": "sugar",
     "chini": "sugar",
@@ -32,7 +34,38 @@ HINGLISH_SYNONYMS = {
     "mirch": "chilli",
     "dhaniya": "coriander",
     "chai": "tea",
-    "biskut": "biscuit"
+    "biskut": "biscuit",
+    # Devanagari
+    "आटा": "atta",
+    "गेहूं": "wheat atta",
+    "मक्खन": "butter",
+    "बटर": "butter",
+    "तेल": "oil",
+    "नमक": "salt",
+    "चीनी": "sugar",
+    "शक्कर": "sugar",
+    "दूध": "milk",
+    "दही": "curd",
+    "चावल": "rice",
+    "दाल": "dal",
+    "हल्दी": "turmeric",
+    "मिर्च": "chilli",
+    "मिर्ची": "chilli",
+    "धनिया": "coriander",
+    "चाय": "tea",
+    "बिस्कुट": "biscuit",
+    "बिस्किट": "biscuit",
+    "काजू": "cashews",
+    "बादाम": "almonds",
+    "किशमिश": "raisins",
+    "मैदा": "maida",
+    "सूजी": "suji",
+    "रवा": "rava",
+    "बेसन": "besan",
+    "पोहा": "poha",
+    "घी": "ghee",
+    "पनीर": "paneer",
+    "ब्रेड": "bread"
 }
 
 

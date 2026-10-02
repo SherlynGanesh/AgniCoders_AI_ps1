@@ -360,3 +360,29 @@ def test_api_products_and_search(client):
     search_data = res_search.json()
     assert len(search_data) >= 1
     assert "butter" in search_data[0]["name"].lower()
+
+
+def test_hindi_devanagari_multi_item_order(client):
+    """Verify that multi-item Devanagari Hindi string correctly segments and matches catalog items."""
+    res = client.post("/orders/parse", json={
+        "message": "4 किलो आटा एक बटर 3 लीटर तेल",
+        "shop_id": 1
+    })
+    assert res.status_code == 200
+    data = res.json()
+    items = data["items"]
+    assert len(items) == 3
+    # Check item 1: Atta
+    assert "atta" in items[0]["name"].lower() or "आटा" in items[0]["raw"]
+    assert items[0]["qty"] == 4
+    # Check item 2: Butter
+    assert "butter" in items[1]["name"].lower() or "बटर" in items[1]["raw"]
+    assert items[1]["qty"] == 1
+    # Check item 3: Oil
+    assert "oil" in items[2]["name"].lower() or "तेल" in items[2]["raw"]
+    assert items[2]["qty"] == 3
+    # If oil is ambiguous, choices should be actual oils, not chikki or kaju!
+    if items[2]["status"] == "ambiguous":
+        assert len(items[2]["options"]) > 0
+        for opt in items[2]["options"]:
+            assert "oil" in opt["label"].lower()

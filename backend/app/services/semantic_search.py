@@ -62,13 +62,28 @@ class SemanticSearchEngine:
         if not query_norm:
             return []
 
-        tokens = [t for t in re.findall(r'\b[a-zA-Z0-9]+\b', query_norm) if len(t) > 1]
-        if not tokens:
-            tokens = [query_norm]
+        # Translate any Devanagari or Hindi commodity / brand terms to English
+        from backend.app.services.ai_service import HINDI_COMMODITIES, HINDI_BRANDS
+        for hc, ec in sorted(HINDI_COMMODITIES.items(), key=lambda x: len(x[0]), reverse=True):
+            if hc in query_norm:
+                query_norm = query_norm.replace(hc, ec)
+        for hb, eb in sorted(HINDI_BRANDS.items(), key=lambda x: len(x[0]), reverse=True):
+            if hb in query_norm:
+                query_norm = query_norm.replace(hb, eb.lower())
 
-        # 1. Target SQL across ALL 5,500+ variants
+        tokens = [t for t in re.findall(r'\b[a-zA-Z0-9]+\b', query_norm) if len(t) > 1]
+        # Separate keyword words from numbers/units
+        word_tokens = [
+            t for t in tokens 
+            if not t.isdigit() and t not in {'kg', 'kilo', 'l', 'ltr', 'liter', 'litre', 'g', 'gm', 'gram', 'pkt', 'packet', 'pc', 'pcs'}
+        ]
+        search_tokens = word_tokens if word_tokens else tokens
+        if not search_tokens:
+            search_tokens = [query_norm]
+
+        # 1. Target SQL across ALL 5,500+ variants using meaningful search tokens
         clauses = []
-        for t in tokens:
+        for t in search_tokens:
             t_pat = f"%{t}%"
             clauses.append(Product.name.ilike(t_pat))
             clauses.append(Product.normalized_name.ilike(t_pat))
@@ -83,19 +98,8 @@ class SemanticSearchEngine:
         )
         results = q.limit(100).all()
 
-        # If strict token match has fewer than 5 results, add general inventory pool
-        if len(results) < 5:
-            fallback_q = (
-                db.query(ProductVariant, Product, Inventory)
-                .join(Product, ProductVariant.product_id == Product.id)
-                .outerjoin(Inventory, (Inventory.variant_id == ProductVariant.id) & (Inventory.shop_id == shop_id))
-            )
-            more = fallback_q.limit(100).all()
-            existing_ids = {r[0].id for r in results}
-            results.extend([m for m in more if m[0].id not in existing_ids])
-
         candidates: List[Dict[str, Any]] = []
-        query_words = set(tokens)
+        query_words = set(search_tokens)
 
         for variant, product, inv in results:
             stock = inv.quantity if inv else 0
@@ -106,20 +110,29 @@ class SemanticSearchEngine:
 
             # Exact whole word overlap
             exact_overlap = query_words.intersection(variant_words)
+            if not exact_overlap:
+                continue
+
             overlap_ratio = len(exact_overlap) / len(query_words) if query_words else 0.0
 
             # Token set ratio
-            ratio = fuzz.token_set_ratio(query_norm, variant_str) / 100.0
+            ratio = fuzz.token_set_ratio(' '.join(search_tokens), variant_str) / 100.0
 
-            # Penalize accidental partial substring match (like 'atta' in 'tata')
-            if overlap_ratio > 0:
-                fuzzy_score = max(ratio, 0.85 + (0.10 * overlap_ratio))
-            else:
-                fuzzy_score = ratio * 0.70
+            fuzzy_score = max(ratio, 0.85 + (0.10 * overlap_ratio))
 
             # Exact whole word match boost
             if any(w in variant_words for w in query_words if len(w) >= 3):
                 fuzzy_score = max(fuzzy_score, 0.90)
+
+            # Penalize recipe mixes when query is a pure commodity (e.g., 'butter' shouldn't favor 'Paneer Butter Masala Mix')
+            has_mix = any(mw in variant_words for mw in {'mix', 'powder', 'recipe', 'masala'})
+            query_wants_mix = any(mw in query_words for mw in {'mix', 'powder', 'recipe', 'masala'})
+            if has_mix and not query_wants_mix:
+                fuzzy_score -= 0.15
+
+            # Pure commodity / head noun boost (e.g. 'Amul Butter' ends with 'butter')
+            if prod_name.lower().endswith(tuple(query_words)):
+                fuzzy_score = min(0.99, fuzzy_score + 0.06)
 
             # Exact phrase match boost
             if query_norm in variant_str:

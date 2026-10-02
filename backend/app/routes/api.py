@@ -327,6 +327,7 @@ def _format_order_response(order) -> Dict[str, Any]:
 
     # 2. Ambiguous / Clarifications needed from PostgreSQL
     clarification_texts = []
+    ai_meta = getattr(order, "_ai_parsed", None)
     for cl in order.clarifications:
         if not cl.resolved:
             options_list = []
@@ -337,11 +338,24 @@ def _format_order_response(order) -> Dict[str, Any]:
                     "variant_id": opt.get("variant_id")
                 })
 
+            # Preserve quantity and unit from parsed item
+            matched_qty = 1
+            matched_unit = "pc"
+            if ai_meta and hasattr(ai_meta, "items"):
+                for itm in ai_meta.items:
+                    amb_lower = cl.ambiguous_text.lower()
+                    prod_lower = (itm.product or "").lower()
+                    if prod_lower in amb_lower or amb_lower in prod_lower:
+                        matched_qty = itm.quantity
+                        if itm.unit:
+                            matched_unit = itm.unit
+                        break
+
             items.append({
                 "raw": cl.ambiguous_text,
                 "name": cl.ambiguous_text.title(),
-                "qty": 1,
-                "unit": "pc",
+                "qty": matched_qty,
+                "unit": matched_unit,
                 "price": 0.0,
                 "conf": 50,
                 "status": "ambiguous",
