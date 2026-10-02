@@ -40,8 +40,10 @@ export async function logout() { if (!DEMO) await req('/auth/logout', { method: 
 const post = (p, b) => req(p, { method: 'POST', body: JSON.stringify(b) });
 const demo = v => new Promise(r => setTimeout(() => r(v), 400));
 export async function register(f) {
-  if (DEMO) { if (/exists/i.test(f.email)) throw new ApiError(409, 'An account with this email already exists.', 'DUPLICATE'); return demo({ pending: true }); }
-  return post('/auth/register', f);
+  if (DEMO) { if (/exists/i.test(f.email)) throw new ApiError(409, 'An account with this email already exists.', 'DUPLICATE'); return demo({ user: { name: f.name, shop: f.shop, email: f.email, verified: true } }); }
+  const d = await post('/auth/register', f);
+  if (d.accessToken) token = d.accessToken;
+  return d;
 }
 export async function verifyOtp(email, otp) {
   if (DEMO) {

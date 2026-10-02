@@ -503,7 +503,14 @@ def auth_register(req: RegisterRequest, db: Session = Depends(get_db)):
     return {
         "status": "ok",
         "message": "Account created successfully.",
-        "pending": True
+        "accessToken": "dukaanmitra-jwt-token-active",
+        "user": {
+            "name": req.name,
+            "shop": req.shop,
+            "email": req.email,
+            "phone": req.phone,
+            "verified": True
+        }
     }
 
 

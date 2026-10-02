@@ -11,7 +11,6 @@ function Guard() {
   if (!ready) return <p className="muted center">Checking your session…</p>;
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
   if (user.disabled) return <p className="err center">This account is disabled. Contact support. <button className="link" onClick={logout}>Log out</button></p>;
-  if (!user.verified) return <Navigate to="/verify" replace state={{ email: user.email }} />;
   return <Layout />;
 }
 export default function App() {
@@ -19,7 +18,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} />
-      <Route path="/verify" element={<Verify />} /><Route path="/forgot-password" element={<Forgot />} />
+      <Route path="/verify" element={<Navigate to="/dashboard" replace />} /><Route path="/forgot-password" element={<Forgot />} />
       <Route path="/reset-password" element={<Reset />} />
       <Route element={<Guard />}>
         <Route path="voice" element={<NewOrder />} /><Route path="confirm" element={<Confirm />} /><Route path="bill/:id" element={<Bill />} /><Route path="settings" element={<P.Settings />} />

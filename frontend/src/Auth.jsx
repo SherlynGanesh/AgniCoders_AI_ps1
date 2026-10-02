@@ -76,6 +76,7 @@ export function Login() {
 
 export function Register() {
   const nav = useNavigate(), { busy, err, run } = useRun(), [e, setE] = useState({});
+  const { login } = useAuth();
   const [f, setF] = useState({ name: '', shop: '', email: '', phone: '', password: '', confirm: '', consent: false });
   const set = k => ev => setF({ ...f, [k]: ev.target.type === 'checkbox' ? ev.target.checked : ev.target.value });
   const submit = async ev => {
@@ -88,8 +89,11 @@ export function Register() {
     if (f.confirm !== f.password) x.confirm = 'Passwords do not match.';
     if (!f.consent) x.consent = 'Accept the terms and privacy policy to continue.';
     setE(x); if (Object.keys(x).length) return;
-    const r = await run(() => auth.register({ name: f.name, shop: f.shop, email: f.email, phone: '+91' + f.phone, password: f.password, consent: true }));
-    if (!r) nav('/verify', { state: { email: f.email, phone: '+91 ' + f.phone } });
+    const r = await run(async () => {
+      const d = await auth.register({ name: f.name, shop: f.shop, email: f.email, phone: '+91' + f.phone, password: f.password, consent: true });
+      login(d?.user || { name: f.name, shop: f.shop, email: f.email, verified: true });
+      nav('/dashboard', { replace: true });
+    });
   };
   return (
     <Shell title="Create Your Account" sub="Join DukaanMitra and take your shop digital" art="register">
@@ -112,34 +116,11 @@ export function Register() {
 }
 
 export function Verify() {
-  const { state } = useLocation(), nav = useNavigate(), email = state?.email, { busy, err, run } = useRun();
-  const [otp, setOtp] = useState(''), [st, setSt] = useState('pending'), [cd, setCd] = useState(30), [left, setLeft] = useState(5);
-  useEffect(() => { if (cd <= 0) return; const t = setTimeout(() => setCd(cd - 1), 1000); return () => clearTimeout(t); }, [cd]);
-  if (!email) return <Shell center title="Verification required" sub="Log in or register to get a code."><Link className="cta btn" to="/login">Go to login</Link></Shell>;
-  const submit = async ev => {
-    ev.preventDefault(); if (!/^\d{6}$/.test(otp) || left <= 0) return;
-    const e = await run(async () => { await auth.verifyOtp(email, otp); setSt('verified'); });
-    if (e) { setSt(e.code === 'OTP_EXPIRED' ? 'expired' : 'failed'); if (e.code !== 'OTP_EXPIRED') setLeft(l => l - 1); }
-  };
-  const resend = async () => { const e = await run(() => auth.resendOtp(email)); if (!e) { setCd(30); setLeft(5); setSt('pending'); setOtp(''); } };
-  const cls = { pending: 'pend', verified: 'ok', expired: 'ambiguous', failed: 'oos' };
-  return (
-    <Shell center title="Verify Your Mobile Number" sub={`We've sent a 6 digit OTP to ${state.phone || email}`}>
-      {auth.DEMO && <p className="muted"><small>Demo: any 6 digits verify. 000000 = expired, 111111 = wrong code.</small></p>}
-      <p>Status: <span className={'chip ' + cls[st]}>{st[0].toUpperCase() + st.slice(1)}</span></p>
-      {st === 'verified' ? <><p>Your account is verified.</p><button className="cta" onClick={() => nav('/login')}>Continue to login</button></> : (
-        <form onSubmit={submit}>
-          <div className="boxes">{[0, 1, 2, 3, 4, 5].map(i => <input key={i} className="box" inputMode="numeric" maxLength={1} aria-label={'Digit ' + (i + 1)} value={(otp[i] || '').trim()} autoComplete={i ? 'off'  : 'one-time-code'}
-            onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(-1); const d = Array.from({ length: 6 }, (_, k) => otp[k] || ' '); d[i] = v || ' '; setOtp(d.join('').replace(/ +$/, '')); if (v) e.target.nextSibling?.focus(); }}
-            onKeyDown={e => { if (e.key === 'Backspace' && !otp[i]) e.target.previousSibling?.focus(); }} />)}</div>
-          {err && <p className="err" role="alert">{err}{st === 'failed' && left > 0 ? ` ${left} attempts left.` : ''}</p>}
-          {left <= 0 && <p className="err">Too many attempts. Request a new code.</p>}
-          <button className="cta" disabled={busy || left <= 0 || otp.length < 6}>{busy ? 'Checking…' : 'Verify'}</button>
-          <p><button type="button" className="link" disabled={cd > 0 || busy} onClick={resend}>{cd > 0 ? `Resend OTP in 00:${String(cd).padStart(2, '0')}` : 'Resend code'}</button></p>
-          <p><Link to="/register">Change mobile number</Link></p>
-        </form>)}
-    </Shell>
-  );
+  const nav = useNavigate();
+  useEffect(() => {
+    nav('/dashboard', { replace: true });
+  }, [nav]);
+  return <Shell center title="Taking you to Dashboard" sub="Redirecting to your store desk…"><p className="center muted">Please wait…</p></Shell>;
 }
 
 export function Forgot() {
