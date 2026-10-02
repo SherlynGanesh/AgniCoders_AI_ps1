@@ -16,18 +16,50 @@ const CAT = [
 const NUM = { ek: 1, do: 2, teen: 3, char: 4, half: 0.5, aadha: 0.5, adha: 0.5 };
 
 function mockParse(msg) {
-  const items = msg.split(/,|\baur\b|\band\b/i).map(s => s.trim()).filter(Boolean).map(raw => {
+  const textLower = msg.toLowerCase();
+  const flags = [];
+  let deliveryNote = '';
+  let contextQuality = 'CLEAR';
+
+  const hasTemporalAata = /\b(aata|atta)\s+(bhej|de\b|dya|pahije|lagel|nikal|lao|kar\b|delivery|jaldi|urgent)\b/i.test(textLower) ||
+    /\b(bhej|de\b|dya|pahije|lagel|jaldi|urgent)\s+(aata|atta)\b/i.test(textLower);
+  const hasCommodityAtta = /(\d+|ek|do|teen|char|chaar|paanch|panch|aadha|half|\bkg\b|\bkilo\b|\bpacket\b)\s*(kilo|kg|packet|g|gm)?\s+(atta|aata)\b/i.test(textLower) ||
+    /\b(aashirvaad|pillsbury|fortune|gehun|sharbati|flour)\s+(atta|aata)\b/i.test(textLower);
+
+  let cleaned = msg;
+  if (hasTemporalAata && hasCommodityAtta) {
+    flags.push("🟢 Multi-Context Resolved: Detected Wheat Flour ('Atta') AND Marathi Temporal Urgency ('Aata' -> Deliver Now).");
+    deliveryNote = "Deliver immediately (Customer requested 'Aata / Now').";
+    cleaned = cleaned.replace(/\b(aata|atta)\s+(bhej|de|dya|pahije|lagel|nikal|lao|kar|delivery)\b/gi, '$2');
+  } else if (hasTemporalAata && !hasCommodityAtta) {
+    flags.push("🟢 Marathi Linguistic Context: Resolved 'Aata' as Temporal Adverb (Deliver Immediately), not Wheat Flour.");
+    deliveryNote = "Deliver immediately (Customer requested 'Aata / Now').";
+    cleaned = cleaned.replace(/\b(aata|atta)\b/gi, '');
+  } else if (hasCommodityAtta) {
+    flags.push("🟢 Linguistic Disambiguation: Confirmed 'Atta' as Wheat Flour commodity based on numeric quantity/unit context.");
+  } else if (/\b(atta|aata)\b/i.test(textLower)) {
+    flags.push("🟡 Context Ambiguity: 'Atta' can mean Marathi 'Aata' (Now) or Wheat Flour. Clarification recommended.");
+    contextQuality = "AMBIGUOUS";
+  }
+
+  const items = cleaned.split(/,|\baur\b|\band\b/i).map(s => s.trim()).filter(Boolean).map(raw => {
     const w = raw.toLowerCase();
     const p = CAT.find(c => c.k.some(k => w.includes(k)));
-    if (!p) return { raw, name: raw, qty: 1, unit: '', price: 0, conf: 40, status: 'unknown', note: 'Not in catalog' };
+    if (!p) return null;
     const m = w.match(/(\d+(?:\.\d+)?)|\b(ek|do|teen|char|half|aadha|adha)\b/);
     const qty = m ? (m[1] ? +m[1] : NUM[m[2]]) : 1;
     const base = { raw, pic: p.pic, conf: p.options ? 70 : 98, name: p.name, qty, unit: p.unit, price: p.price || 0 };
     if (p.options) return { ...base, status: 'ambiguous', options: p.options, note: 'Which one?' };
     if (qty > p.stock) return { ...base, status: 'oos', note: p.stock ? `Only ${p.stock} ${p.unit} in stock` : 'Out of stock' };
     return { ...base, status: 'ok' };
-  });
-  return { id: 'demo-' + Date.now(), items, clarification: makeClarification(items) };
+  }).filter(Boolean);
+
+  if (!items.length) {
+    flags.push("⚠️ Audio / Context Alert: Could not extract recognizable store items from speech. Please speak louder or rephrase.");
+    contextQuality = "INAUDIBLE";
+  }
+
+  return { id: 'demo-' + Date.now(), items, clarification: makeClarification(items), flags, contextQuality, deliveryNote };
 }
 export function makeClarification(items) {
   const q = items.flatMap(i => i.status === 'ambiguous' ? [`${i.name}: ${i.options.map(o => o.label).join(', ')} — kaunsa chahiye?`]
@@ -40,11 +72,11 @@ export const parseOrder = message => req('/orders/parse', { method: 'POST', body
   return mockParse(message);
 });
 
-export function confirmOrder(id, items, message = '') {
-  return req('/orders/confirm', { method: 'POST', body: JSON.stringify({ id, items, message }) }).catch(() => {
+export function confirmOrder(id, items, message = '', delivery_note = '') {
+  return req('/orders/confirm', { method: 'POST', body: JSON.stringify({ id, items, message, delivery_note }) }).catch(() => {
     const lines = items.map(i => ({ name: i.name, qty: i.qty, unit: i.unit, price: i.price, total: i.qty * i.price }));
     const total = lines.reduce((s, l) => s + l.total, 0);
     return Promise.resolve({ bill: { lines, subtotal: total, total },
-      deliveryNote: /kal subah/i.test(message) ? 'Deliver tomorrow morning.' : 'Deliver today.' });
+      deliveryNote: delivery_note || (/kal subah/i.test(message) ? 'Deliver tomorrow morning.' : 'Deliver today.') });
   });
 }

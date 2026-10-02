@@ -77,6 +77,9 @@ class ParsedOrderItem(BaseModel):
 
 class AIParsedInput(BaseModel):
     items: List[ParsedOrderItem]
+    delivery_note: Optional[str] = None
+    flags: List[str] = []
+    context_status: str = "CLEAR"  # CLEAR, AMBIGUOUS, INCOMPLETE, LINGUISTIC_DISAMBIGUATION
 
 
 class ProductMatchCandidate(BaseModel):

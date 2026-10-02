@@ -54,10 +54,62 @@ class RuleBasedHinglishAIAdapter(BaseAIAdapter):
 
     def parse_hinglish_order(self, text: str) -> AIParsedInput:
         if not text or not text.strip():
-            return AIParsedInput(items=[])
+            return AIParsedInput(items=[], flags=["Context Warning: No audible speech or text detected."], context_status="INAUDIBLE")
+
+        raw_input = text.strip()
+        text_lower = raw_input.lower()
+        flags: List[str] = []
+        delivery_note: Optional[str] = None
+        context_status = "CLEAR"
+
+        # -------------------------------------------------------------
+        # Marathi / Hinglish Disambiguation: "Aata" (Now) vs "Atta" (Flour)
+        # -------------------------------------------------------------
+        # Check if 'aata' is used as a temporal adverb (Marathi for "Now / Immediately")
+        # e.g., "aata bhej do", "aata de dya", "aata 2 packet milk bhej do", "urgent aata bhej do"
+        has_temporal_aata = bool(
+            re.search(r'\b(aata|atta)\s+(bhej|de\b|dya|pahije|lagel|nikal|lao|kar\b|delivery|jaldi|urgent)\b', text_lower) or
+            re.search(r'\b(bhej|de\b|dya|pahije|lagel|jaldi|urgent)\s+(aata|atta)\b', text_lower) or
+            re.search(r'^(aata|atta)\s+\d+.*(bhej|de|dya|chahiye)', text_lower)
+        )
+
+        # Check if 'atta' is explicitly a commodity (Wheat Flour)
+        # e.g., "2 kilo atta", "1 kg aata", "atta 5kg", "aashirvaad atta", "wheat flour", "gehun atta"
+        has_commodity_atta = bool(
+            re.search(r'(\d+|ek|do|teen|char|chaar|paanch|panch|aadha|half|\bkg\b|\bkilo\b|\bpacket\b)\s*(kilo|kg|packet|g|gm)?\s+(atta|aata)\b', text_lower) or
+            re.search(r'\b(atta|aata)\s+(\d+|kilo|kg)\b(?!\s*(kilo|kg|packet|pkt|bottle|dabba|can|g|gm)?\s*(milk|doodh|oil|tel|butter|bread|sugar|cheeni|biscuit|soap|chai|tea|rice|chawal|dal|daal))', text_lower) or
+            re.search(r'\b(aashirvaad|pillsbury|fortune|gehun|sharbati|flour)\s+(atta|aata)\b', text_lower) or
+            re.search(r'\b(atta|aata)\s+(packet|bori|bag|thaili)\b', text_lower)
+        )
+
+        cleaned = raw_input
+
+        if has_temporal_aata and has_commodity_atta:
+            flags.append("🟢 Multi-Context Resolved: Detected Wheat Flour ('Atta') AND Marathi Temporal Urgency ('Aata' -> Deliver Now).")
+            delivery_note = "Deliver immediately (Customer requested 'Aata / Now')."
+            # Only remove the temporal aata occurrences
+            cleaned = re.sub(r'\b(aata|atta)\s+(bhej|de|dya|pahije|lagel|nikal|lao|kar|delivery)\b', r'\2', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\b(bhej|de|dya|pahije|lagel)\s+(aata|atta)\b', r'\1', cleaned, flags=re.IGNORECASE)
+        elif has_temporal_aata and not has_commodity_atta:
+            flags.append("🟢 Marathi Linguistic Context: Resolved 'Aata' as Temporal Adverb (Deliver Immediately), not Wheat Flour.")
+            delivery_note = "Deliver immediately (Customer requested 'Aata / Now')."
+            # Strip temporal aata so it doesn't get extracted as a product
+            cleaned = re.sub(r'\b(aata|atta)\b', '', cleaned, flags=re.IGNORECASE)
+        elif has_commodity_atta:
+            flags.append("🟢 Linguistic Disambiguation: Confirmed 'Atta' as Wheat Flour commodity based on numeric quantity/unit context.")
+        elif re.search(r'\b(atta|aata)\b', text_lower) and not has_commodity_atta and not has_temporal_aata:
+            flags.append("🟡 Context Ambiguity: 'Atta' can mean Marathi 'Aata' (Now) or Wheat Flour. Clarification recommended.")
+            context_status = "AMBIGUOUS"
+
+        # Check for delivery time modifiers
+        if re.search(r'\b(kal subah|tomorrow morning)\b', text_lower):
+            delivery_note = "Deliver tomorrow morning."
+            flags.append("📅 Delivery Preference: Identified schedule for 'Kal Subah'.")
+        elif re.search(r'\b(aaj shaam|today evening)\b', text_lower):
+            delivery_note = "Deliver today evening."
+            flags.append("📅 Delivery Preference: Identified schedule for 'Aaj Shaam'.")
 
         # Strip conversational filler prefixes & suffixes
-        cleaned = text.strip()
         cleaned = re.sub(r'^(bhaiya|bhai|sunona|suno|kaka|uncle|chachu)\b[,:\s]*', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\b(dena|dedo|de do|chahiye|pack karna|bhejo|nikal do)\b.*$', '', cleaned, flags=re.IGNORECASE)
 
@@ -74,7 +126,16 @@ class RuleBasedHinglishAIAdapter(BaseAIAdapter):
             if parsed_item:
                 items.append(parsed_item)
 
-        return AIParsedInput(items=items)
+        if not items:
+            flags.append("⚠️ Audio / Context Alert: Could not extract recognizable store items from speech. Please speak louder or rephrase.")
+            context_status = "INAUDIBLE"
+
+        return AIParsedInput(
+            items=items,
+            delivery_note=delivery_note,
+            flags=flags,
+            context_status=context_status
+        )
 
     def _extract_item_from_clause(self, clause: str) -> Optional[ParsedOrderItem]:
         raw_snippet = clause.strip()

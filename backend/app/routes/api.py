@@ -360,10 +360,23 @@ def frontend_parse_order(req: FrontendParseRequest, db: Session = Depends(get_db
 
     clarification_msg = "Namaste! " + " ".join(clarification_texts) if clarification_texts else ""
 
+    ai_meta = getattr(order, "_ai_parsed", None)
+    order_flags = list(ai_meta.flags) if ai_meta and hasattr(ai_meta, "flags") and ai_meta.flags else []
+    context_quality = ai_meta.context_status if ai_meta and hasattr(ai_meta, "context_status") and ai_meta.context_status else "CLEAR"
+    delivery_note = ai_meta.delivery_note if ai_meta and hasattr(ai_meta, "delivery_note") and ai_meta.delivery_note else ""
+
+    if not items and not clarification_texts:
+        if not any("not extract" in f.lower() for f in order_flags):
+            order_flags.append("⚠️ Audio / Context Alert: Could not extract recognizable store items from speech. Please speak louder or rephrase.")
+        context_quality = "INAUDIBLE"
+
     return {
         "id": str(order.id),
         "items": items,
-        "clarification": clarification_msg
+        "clarification": clarification_msg,
+        "flags": order_flags,
+        "contextQuality": context_quality,
+        "deliveryNote": delivery_note
     }
 
 
@@ -372,6 +385,7 @@ class FrontendConfirmRequest(BaseModel):
     items: List[Dict[str, Any]]
     message: Optional[str] = ""
     customer_name: Optional[str] = "Walk-in"
+    delivery_note: Optional[str] = ""
 
 
 @router.post("/orders/confirm", tags=["Frontend Integration"])
@@ -412,7 +426,7 @@ def frontend_confirm_order(req: FrontendConfirmRequest, db: Session = Depends(ge
                 order.status = "CONFIRMED"
                 db.commit()
 
-    delivery_note = "Deliver tomorrow morning." if "kal subah" in (req.message or "").lower() else "Deliver today."
+    delivery_note = req.delivery_note if req.delivery_note else ("Deliver tomorrow morning." if "kal subah" in (req.message or "").lower() else "Deliver today.")
 
     return {
         "bill": {

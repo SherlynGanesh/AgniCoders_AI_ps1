@@ -104,6 +104,7 @@ class OrderEngine:
         # Recalculate bill
         billing_service.recalculate_order_bill(db, order.id)
         db.refresh(order)
+        order._ai_parsed = parsed_result
         return order
 
     def resolve_order_clarification(

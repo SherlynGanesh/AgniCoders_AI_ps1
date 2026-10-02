@@ -15,7 +15,7 @@ export function Confirm() {
   const confirm = async () => {
     setBusy(true); setErr('');
     try {
-      const b = await api.confirmOrder(order.id, order.items, msg), id = '#DM-' + (1000 + Math.floor(Math.random() * 9000));
+      const b = await api.confirmOrder(order.id, order.items, msg, order.deliveryNote), id = '#DM-' + (1000 + Math.floor(Math.random() * 9000));
       addOrder({ id, customer: name.trim() || 'Walk-in', items: order.items.length, total: b.bill.total, status: 'Confirmed', date: 'Today', pay, bill: b.bill, note: b.deliveryNote });
       go('/bill/' + encodeURIComponent(id), { replace: true });
     } catch (e) { setErr(e.message); setBusy(false); }
