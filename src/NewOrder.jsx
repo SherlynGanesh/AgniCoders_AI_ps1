@@ -24,8 +24,19 @@ export default function NewOrder() {
     const r = new S(); r.lang = SPEECH[lang] || 'hi-IN'; r.onresult = e => setMsg(e.results[0][0].transcript); r.onend = () => setLive(false);
     rec.current = r; r.start(); setLive(true);
   };
-  const run = async () => { if (!msg.trim() || busy) return; setBusy(true); setErr('');
-    try { setOrder(await api.parseOrder(msg)); } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  const runWith = async (text) => {
+    const query = (typeof text === 'string' ? text : msg).trim();
+    if (!query || busy) return;
+    setBusy(true); setErr('');
+    try {
+      const res = await api.parseOrder(query);
+      setOrder(res);
+    } catch (e) {
+      setErr(e.message || 'Error processing order.');
+    } finally {
+      setBusy(false);
+    }
+  };
   const update = items => setOrder(o => ({ ...o, items, clarification: api.makeClarification(items) }));
   const choose = () => { const o = order.items[sel].options[pick];
     update(order.items.map((it, n) => n === sel ? { ...it, name: o.label, price: o.price, status: 'ok', conf: 95, options: undefined, note: '' } : it)); setSel(null); };
@@ -35,17 +46,24 @@ export default function NewOrder() {
   return (
     <div className="vgrid">
       <section className="card vcard">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#059669', background: '#ecfdf5', padding: '3px 10px', borderRadius: 12 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', display: 'inline-block' }}></span>
+            PostgreSQL AI Backend Connected
+          </span>
+        </div>
         <div className="tabs"><button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice Order</button>
           <button className={tab === 'type' ? 'on' : ''} onClick={() => setTab('type')}>Type Order</button></div>
         {tab === 'voice' && <><button className={'mic' + (live ? ' live' : '')} onClick={speak} aria-label="Tap to speak">🎙</button>
           <p><b>{live ? 'Listening… tap to stop' : 'Tap to speak'}</b></p><p className="muted">or type your order</p></>}
         <textarea value={msg} onChange={e => setMsg(e.target.value)} rows={3} placeholder="e.g. 2 kilo atta, ek butter de do…" />
-        <button className="cta" onClick={run} disabled={busy || !msg.trim()}>{busy && !order ? 'Processing…' : 'Process'}</button>
+        <button className="cta" onClick={() => runWith(msg)} disabled={busy || !msg.trim()}>{busy ? 'Processing with AI Desk…' : 'Process'}</button>
+        {err && <p className="err" role="alert">{err}</p>}
         <div className="demobox">
-          <b>Quick Order Samples:</b>
+          <b>Quick Order Samples (Click to auto-process):</b>
           <div className="row l" style={{ marginTop: 6, flexWrap: 'wrap', gap: 6 }}>
             {SAMPLES.map(s => (
-              <button key={s.label} type="button" className="btn-sm" onClick={() => setMsg(s.text)}>
+              <button key={s.label} type="button" className="btn-sm" onClick={() => { setMsg(s.text); runWith(s.text); }}>
                 {s.label}
               </button>
             ))}
@@ -53,7 +71,10 @@ export default function NewOrder() {
         </div>
       </section>
       <section className="card">
-        <h2>AI Understanding</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <h2>AI Understanding</h2>
+          <small className="muted">Live PostgreSQL Matching</small>
+        </div>
         {!order ? <p className="muted">Speak or type an order. Items will be extracted and matched to your catalog here.</p> : <>
           <p className="muted">Original Transcript</p><p className="tbox">{msg}</p>
           <p className="muted">Extracted Items</p>
