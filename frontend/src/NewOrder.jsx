@@ -7,21 +7,48 @@ import { useAuth } from './AuthContext';
 
 const inr = n => '₹' + (+n).toLocaleString('en-IN');
 
-const MARATHI_SAMPLES = [
-  { label: '🌾 2 kilo atta, ek butter (Wheat Flour)', text: '2 kilo atta, ek amul butter' },
-  { label: '⚡ Aata 2 packet milk bhej do (Marathi Now)', text: 'aata 2 packet milk bhej do' },
-  { label: '🗣️ Aata dya bhaiya, urgent lagel (Marathi Imperative)', text: 'aata dya bhaiya, urgent lagel' },
-  { label: '❓ Atta de do (Ambiguity check)', text: 'atta de do' },
-  { label: '🔇 Hnmm shhh... (Inaudible / Low context)', text: 'hnmm shhh...' },
-];
-
-const RETAIL_SAMPLES = [
-  { label: '🛒 Grocery & Dairy (Kal subah)', text: 'Bhaiya, 2 kilo atta, ek Amul butter aur sugar aadha kilo, kal subah tak bhej dena' },
+const STORE_SAMPLES = [
+  { label: '🛒 Grocery & Dairy', text: 'Bhaiya, 2 kilo atta, ek Amul butter aur sugar aadha kilo, kal subah tak bhej dena' },
   { label: '🧴 Personal & Home Care', text: 'Dettol soap 2 piece, coconut oil 200ml aur plastic bathroom mug bhej do' },
   { label: '🍜 Packaged Food & Snacks', text: 'Maggi 4 pack, Parle-G biscuit aur tea masala chahiye' },
 ];
 
 const LBL = { ok: 'Matched', ambiguous: 'Needs selection', oos: 'Stock issue', unknown: 'Not found' };
+
+// Helper to encode Float32 audio samples into standard 16-bit PCM WAV
+function encodeWAV(samples, sampleRate = 16000) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  const writeString = (offset, string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // Mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true); // 16-bit
+  writeString(36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+
+  return new Blob([view], { type: 'audio/wav' });
+}
 
 export default function NewOrder() {
   const { lang } = useAuth(), go = useNavigate();
@@ -35,31 +62,34 @@ export default function NewOrder() {
   const [live, setLive] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // Audio level & inaudible detection
+  // Audio level & status
   const [audioLevel, setAudioLevel] = useState(0);
   const [audioAudible, setAudioAudible] = useState(false);
-  const [audioWarning, setAudioWarning] = useState('');
+  const [statusMsg, setStatusMsg] = useState('');
 
-  const recRef = useRef(null);
   const audioContextRef = useRef(null);
-  const analyserRef = useRef(null);
   const micStreamRef = useRef(null);
+  const scriptNodeRef = useRef(null);
+  const audioChunksRef = useRef([]);
   const animFrameRef = useRef(null);
+  const isRecordingRef = useRef(false);
 
   // Clean up audio & mic streams on unmount
   useEffect(() => {
     return () => {
-      stopAudioMonitoring();
-      if (recRef.current) {
-        try { recRef.current.abort(); } catch (_) {}
-      }
+      stopRecordingAndMonitoring();
     };
   }, []);
 
-  const stopAudioMonitoring = () => {
+  const stopRecordingAndMonitoring = () => {
+    isRecordingRef.current = false;
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
+    }
+    if (scriptNodeRef.current) {
+      try { scriptNodeRef.current.disconnect(); } catch (_) {}
+      scriptNodeRef.current = null;
     }
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach(t => t.stop());
@@ -73,53 +103,63 @@ export default function NewOrder() {
     setAudioAudible(false);
   };
 
-  const stopListening = () => {
-    stopAudioMonitoring();
-    if (recRef.current) {
-      try { recRef.current.stop(); } catch (_) {}
-      recRef.current = null;
-    }
-    setLive(false);
-  };
-
-  const startListening = async () => {
+  const handleMicClick = async () => {
     setErr('');
-    setAudioWarning('');
 
     if (live) {
-      stopListening();
-      return;
-    }
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setErr('Voice recognition requires Google Chrome or Edge. You can use Type Order or click the samples below.');
+      // User tapped Stop -> Finish recording and send to backend
+      setLive(false);
+      finishAndSendAudio();
       return;
     }
 
     try {
-      // 1. Setup Web Audio API volume & audible detection
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setStatusMsg('Starting microphone…');
+      // Request mic permission and stream
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
       micStreamRef.current = stream;
 
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const audioCtx = new AudioCtx();
+      const audioCtx = new AudioCtx({ sampleRate: 16000 });
       audioContextRef.current = audioCtx;
 
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
       source.connect(analyser);
-      analyserRef.current = analyser;
 
+      // Collect PCM audio samples
+      audioChunksRef.current = [];
+      const scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      scriptNodeRef.current = scriptNode;
+
+      scriptNode.onaudioprocess = (e) => {
+        if (!isRecordingRef.current) return;
+        const channelData = e.inputBuffer.getChannelData(0);
+        audioChunksRef.current.push(new Float32Array(channelData));
+      };
+
+      source.connect(scriptNode);
+      scriptNode.connect(audioCtx.destination);
+
+      isRecordingRef.current = true;
+      setLive(true);
+      setStatusMsg('Recording audio… Speak clearly into microphone.');
+
+      // Monitor audio volume in real-time
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
-      let maxLevelSeen = 0;
-      const startTime = Date.now();
 
       const monitorAudio = () => {
-        if (!analyserRef.current) return;
-        analyserRef.current.getByteFrequencyData(dataArray);
+        if (!isRecordingRef.current) return;
+        analyser.getByteFrequencyData(dataArray);
 
         let sum = 0;
         for (let i = 0; i < bufferLength; i++) {
@@ -130,65 +170,58 @@ export default function NewOrder() {
         setAudioLevel(level);
 
         if (level > 8) {
-          maxLevelSeen = Math.max(maxLevelSeen, level);
           setAudioAudible(true);
-          setAudioWarning('');
         } else {
           setAudioAudible(false);
-        }
-
-        // Diagnostic flag: If 2.5s pass and mic volume is near zero
-        if (Date.now() - startTime > 2500 && maxLevelSeen < 8) {
-          setAudioWarning('⚠️ You are not audible. Please speak louder or move closer to the mic.');
         }
 
         animFrameRef.current = requestAnimationFrame(monitorAudio);
       };
       animFrameRef.current = requestAnimationFrame(monitorAudio);
 
-      // 2. Setup Speech Recognition
-      const r = new SpeechRecognition();
-      r.continuous = false;
-      r.interimResults = true;
-      r.lang = SPEECH[lang] || 'hi-IN';
-
-      r.onstart = () => {
-        setLive(true);
-        setErr('');
-      };
-
-      r.onresult = (e) => {
-        const text = Array.from(e.results).map(res => res[0].transcript).join('');
-        setMsg(text);
-        if (e.results[0] && e.results[0].isFinal) {
-          stopListening();
-          runWith(text);
-        }
-      };
-
-      r.onerror = (e) => {
-        console.warn('SpeechRecognition error:', e.error);
-        stopListening();
-        if (e.error === 'not-allowed') {
-          setErr('Microphone permission blocked. Click the lock icon in your browser URL bar to allow microphone access.');
-        } else if (e.error === 'no-speech') {
-          setAudioWarning('⚠️ You are not audible: No speech was detected by the microphone. Please speak louder or choose a sample.');
-        } else if (e.error === 'network') {
-          setErr('Speech recognition cloud connection unavailable. Please use the quick samples or Type Order.');
-        } else {
-          setErr(`Microphone input issue: ${e.error}. Try again or select a test sample.`);
-        }
-      };
-
-      r.onend = () => {
-        stopListening();
-      };
-
-      recRef.current = r;
-      r.start();
     } catch (e) {
-      stopListening();
-      setErr('Microphone access failed: ' + (e.message || 'permission denied'));
+      stopRecordingAndMonitoring();
+      setLive(false);
+      setErr('Microphone access denied or not available. Please allow mic in browser settings: ' + (e.message || ''));
+    }
+  };
+
+  const finishAndSendAudio = async () => {
+    stopRecordingAndMonitoring();
+
+    const chunks = audioChunksRef.current;
+    if (!chunks || chunks.length === 0) {
+      setErr('No audio was captured. Please try speaking again.');
+      return;
+    }
+
+    // Merge Float32Array chunks
+    let totalLength = 0;
+    for (let c of chunks) totalLength += c.length;
+    const mergedSamples = new Float32Array(totalLength);
+    let offset = 0;
+    for (let c of chunks) {
+      mergedSamples.set(c, offset);
+      offset += c.length;
+    }
+
+    // Encode to 16-bit PCM WAV
+    const wavBlob = encodeWAV(mergedSamples, 16000);
+
+    setBusy(true);
+    setStatusMsg('Sending audio to Backend AI Speech Engine…');
+
+    try {
+      const res = await api.sendVoiceOrder(wavBlob);
+      if (res.transcript) {
+        setMsg(res.transcript);
+      }
+      setOrder(res);
+      setStatusMsg('');
+    } catch (e) {
+      setErr('Backend speech recognition error: ' + (e.message || 'Server error.'));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -223,7 +256,7 @@ export default function NewOrder() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#059669', background: '#ecfdf5', padding: '4px 12px', borderRadius: 12 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', display: 'inline-block' }}></span>
-            PostgreSQL AI Backend Connected
+            Backend AI Voice &amp; PostgreSQL Engine
           </span>
           {order?.contextQuality && (
             <span style={{
@@ -248,20 +281,22 @@ export default function NewOrder() {
           <div style={{ textAlign: 'center', padding: '10px 0' }}>
             <button
               className={'mic' + (live ? ' live' : '')}
-              onClick={startListening}
+              onClick={handleMicClick}
+              disabled={busy}
               aria-label="Tap to speak"
               style={{
                 boxShadow: live ? '0 0 0 10px rgba(239, 68, 68, 0.25)' : 'none',
-                transition: 'all 0.2s ease'
+                transition: 'all 0.2s ease',
+                cursor: busy ? 'wait' : 'pointer'
               }}
             >
               🎙
             </button>
             <p style={{ marginTop: 8 }}>
-              <b>{live ? '🔴 Listening… Speak now (Tap to stop)' : 'Tap microphone to speak'}</b>
+              <b>{busy ? '⏳ Processing speech on backend…' : live ? '🔴 Recording… Tap again to STOP & Process' : 'Tap microphone to speak'}</b>
             </p>
             <p className="muted" style={{ fontSize: 13 }}>
-              {live ? 'Speak in Hindi / Marathi / Hinglish (e.g. 2 kilo atta, ek butter)' : 'Or choose sample / type your order below'}
+              {statusMsg || (live ? 'Speak your order into the microphone (Hindi / Marathi / Hinglish)' : 'Direct backend audio recognition with Marathi disambiguation')}
             </p>
 
             {/* Live Real-time Decibel / Volume Meter */}
@@ -269,7 +304,7 @@ export default function NewOrder() {
               <div style={{ margin: '14px auto 8px', maxWidth: 300, background: '#f3f4f6', padding: '8px 12px', borderRadius: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4, fontWeight: 600 }}>
                   <span style={{ color: audioAudible ? '#059669' : '#9ca3af' }}>
-                    {audioAudible ? '🔊 Voice Audible' : '🔇 Low Volume'}
+                    {audioAudible ? '🔊 Voice Audible' : '🔇 Low Volume / Silent'}
                   </span>
                   <span style={{ color: '#4b5563' }}>{audioLevel}%</span>
                 </div>
@@ -286,28 +321,12 @@ export default function NewOrder() {
           </div>
         )}
 
-        {/* Diagnostic Audio Warning */}
-        {audioWarning && (
-          <div style={{
-            background: '#fffbeb',
-            border: '1px solid #fde68a',
-            color: '#b45309',
-            padding: '8px 12px',
-            borderRadius: 8,
-            fontSize: 13,
-            fontWeight: 600,
-            marginBottom: 10
-          }}>
-            {audioWarning}
-          </div>
-        )}
-
         <textarea
           value={msg}
           onChange={e => setMsg(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runWith(msg); } }}
           rows={3}
-          placeholder="e.g. 2 kilo atta, ek butter de do… (press Enter to process)"
+          placeholder="e.g. 2 kilo atta, ek butter de do… (or click mic above)"
         />
 
         <div className="row l" style={{ marginTop: 8, gap: 8 }}>
@@ -322,38 +341,21 @@ export default function NewOrder() {
           <button
             type="button"
             className={'btn ' + (live ? 'cta' : 'ghost')}
-            onClick={startListening}
+            onClick={handleMicClick}
+            disabled={busy}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
-            🎙️ {live ? '🔴 Stop Mic' : 'Speak'}
+            🎙️ {live ? '🔴 Stop & Submit' : 'Record Mic'}
           </button>
         </div>
 
         {err && <p className="err" role="alert" style={{ marginTop: 8 }}>{err}</p>}
 
-        {/* Linguistic Test Samples: Marathi vs Wheat Flour */}
+        {/* General Store Samples */}
         <div className="demobox" style={{ marginTop: 14 }}>
-          <b style={{ color: '#1e293b', fontSize: 13 }}>🌾 Marathi vs Atta Disambiguation Tests:</b>
+          <b style={{ color: '#1e293b', fontSize: 13 }}>🛒 Quick Store Order Samples:</b>
           <div className="row l" style={{ marginTop: 6, flexWrap: 'wrap', gap: 6 }}>
-            {MARATHI_SAMPLES.map(s => (
-              <button
-                key={s.label}
-                type="button"
-                className="btn-sm"
-                style={{ fontSize: 11, padding: '4px 8px' }}
-                onClick={() => { setMsg(s.text); runWith(s.text); }}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* General Retail Samples */}
-        <div className="demobox" style={{ marginTop: 10 }}>
-          <b style={{ color: '#1e293b', fontSize: 13 }}>🛒 General Retail & Grocery Samples:</b>
-          <div className="row l" style={{ marginTop: 6, flexWrap: 'wrap', gap: 6 }}>
-            {RETAIL_SAMPLES.map(s => (
+            {STORE_SAMPLES.map(s => (
               <button
                 key={s.label}
                 type="button"
@@ -377,7 +379,7 @@ export default function NewOrder() {
 
         {!order ? (
           <p className="muted" style={{ marginTop: 14 }}>
-            Speak or type an order above. DukaanMitra will extract products, detect Marathi vs Hindi meanings, and match against your 5,500+ store catalog.
+            Speak into the microphone or type above. DukaanMitra transcribes your audio on the backend, detects Marathi vs Hindi meanings, and matches against your 5,500+ store catalog.
           </p>
         ) : (
           <>
@@ -408,7 +410,7 @@ export default function NewOrder() {
             {order.flags && order.flags.length > 0 && (
               <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {order.flags.map((flag, idx) => {
-                  const isWarning = flag.includes('⚠️') || flag.includes('Alert');
+                  const isWarning = flag.includes('⚠️') || flag.includes('Alert') || flag.includes('Warning') || flag.includes('audible');
                   const isAmbiguous = flag.includes('🟡') || flag.includes('Ambiguity');
                   const bg = isWarning ? '#fee2e2' : isAmbiguous ? '#fef3c7' : '#ecfdf5';
                   const color = isWarning ? '#991b1b' : isAmbiguous ? '#92400e' : '#065f46';
@@ -450,7 +452,7 @@ export default function NewOrder() {
                 <span style={{ fontSize: 24, display: 'block', marginBottom: 4 }}>🔍</span>
                 <b>No items matched</b>
                 <p style={{ fontSize: 12, margin: '4px 0 0' }}>
-                  The input did not contain recognized catalog items. Click one of the test samples above or rephrase.
+                  The speech did not contain recognized catalog items. Click one of the samples above or speak again.
                 </p>
               </div>
             ) : (

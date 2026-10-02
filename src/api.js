@@ -80,3 +80,18 @@ export function confirmOrder(id, items, message = '', delivery_note = '') {
       deliveryNote: delivery_note || (/kal subah/i.test(message) ? 'Deliver tomorrow morning.' : 'Deliver today.') });
   });
 }
+
+export async function sendVoiceOrder(audioBlob) {
+  const formData = new FormData();
+  formData.append('audio', audioBlob, 'order_audio.wav');
+  formData.append('shop_id', '1');
+
+  const API_BASE = 'http://localhost:8000/api';
+  const res = await fetch(`${API_BASE}/orders/voice`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`Backend voice error: ${res.statusText}`);
+  return await res.json();
+}
+

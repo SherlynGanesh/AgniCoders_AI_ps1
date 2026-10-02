@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from decimal import Decimal
@@ -17,6 +17,7 @@ from backend.app.schemas.domain import (
     SemanticSearchRequest, SemanticSearchItem
 )
 from backend.app.services.order_engine import order_engine
+from backend.app.services.voice_service import voice_service
 from backend.app.services.semantic_search import semantic_engine
 from backend.data_ingestion.normalization import normalize_text
 
@@ -305,16 +306,7 @@ def _get_item_pic(name: str, category: str = "") -> str:
     return "🛒"
 
 
-@router.post("/orders/parse", tags=["Frontend Integration"])
-def frontend_parse_order(req: FrontendParseRequest, db: Session = Depends(get_db)):
-    """
-    Called by NewOrder.jsx in the frontend.
-    Executes AI entity extraction, catalog search, and ambiguity detection against PostgreSQL.
-    """
-    order = order_engine.create_and_analyze_order(
-        db, shop_id=req.shop_id or 1, raw_input=req.message
-    )
-
+def _format_order_response(order) -> Dict[str, Any]:
     items = []
     # 1. Matched items from PostgreSQL
     for itm in order.items:
@@ -378,6 +370,89 @@ def frontend_parse_order(req: FrontendParseRequest, db: Session = Depends(get_db
         "contextQuality": context_quality,
         "deliveryNote": delivery_note
     }
+
+
+@router.post("/orders/parse", tags=["Frontend Integration"])
+def frontend_parse_order(req: FrontendParseRequest, db: Session = Depends(get_db)):
+    """
+    Called by NewOrder.jsx in the frontend.
+    Executes AI entity extraction, catalog search, and ambiguity detection against PostgreSQL.
+    """
+    order = order_engine.create_and_analyze_order(
+        db, shop_id=req.shop_id or 1, raw_input=req.message
+    )
+    res = _format_order_response(order)
+    res["transcript"] = req.message
+    return res
+
+
+@router.post("/orders/voice", tags=["Frontend Integration"])
+async def frontend_voice_order(
+    request: Request,
+    audio: Optional[UploadFile] = File(None),
+    audio_base64: Optional[str] = Form(None),
+    shop_id: Optional[int] = Form(1),
+    db: Session = Depends(get_db)
+):
+    """
+    Backend Audio Speech-to-Text & Order Processing.
+    Receives recorded microphone audio (WAV) directly from browser.
+    Checks microphone loudness / decibels to detect inaudible speech,
+    transcribes using multilingual Hinglish/Marathi speech recognition,
+    and returns matched order items with diagnostic flags.
+    """
+    import base64
+    wav_bytes = b""
+    if audio is not None:
+        wav_bytes = await audio.read()
+    elif audio_base64:
+        clean_b64 = audio_base64.split(",")[-1]
+        wav_bytes = base64.b64decode(clean_b64)
+    else:
+        try:
+            body = await request.json()
+            if "audio_base64" in body and body["audio_base64"]:
+                clean_b64 = body["audio_base64"].split(",")[-1]
+                wav_bytes = base64.b64decode(clean_b64)
+            if "shop_id" in body and body["shop_id"]:
+                shop_id = body["shop_id"]
+        except Exception:
+            pass
+
+    if not wav_bytes:
+        return {
+            "id": "draft",
+            "transcript": "",
+            "items": [],
+            "clarification": "",
+            "flags": ["⚠️ Audio Warning: No audio received by backend. Please check mic permissions."],
+            "contextQuality": "INAUDIBLE",
+            "deliveryNote": "",
+            "decibels": -100
+        }
+
+    trans_result = voice_service.transcribe_wav(wav_bytes)
+
+    if not trans_result["success"]:
+        return {
+            "id": "draft",
+            "transcript": "",
+            "items": [],
+            "clarification": "",
+            "flags": [trans_result["message"]],
+            "contextQuality": "INAUDIBLE" if trans_result["error"] == "not_audible" else "AMBIGUOUS",
+            "deliveryNote": "",
+            "decibels": trans_result.get("db", -100)
+        }
+
+    transcript = trans_result["transcript"]
+    order = order_engine.create_and_analyze_order(
+        db, shop_id=shop_id or 1, raw_input=transcript
+    )
+    formatted = _format_order_response(order)
+    formatted["transcript"] = transcript
+    formatted["decibels"] = trans_result.get("db", 0)
+    return formatted
 
 
 class FrontendConfirmRequest(BaseModel):
